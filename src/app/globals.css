@@ -1,0 +1,118 @@
+@import "tailwindcss";
+
+/* ============================================================
+   LUNA PRODUCTION — дизайн-система EVA MOON
+   Брендовые цвета отвечают за интерфейс (шапка, кнопки, акценты).
+   Цвета графиков — отдельная валидированная палитра: брендовые
+   Deep Ocean / Gold Moon НЕ различимы между собой как цвета данных
+   и не проходят проверку на дальтонизм, поэтому для многосерийных
+   графиков используется палитра --series-*.
+   ============================================================ */
+
+@theme {
+  /* --- Бренд --- */
+  --color-ocean: #02333a;
+  --color-ocean-soft: #0e4a52;
+  --color-ocean-ink: #0e2a2e;
+  --color-gold: #e9924a;
+  --color-gold-deep: #c9742f;
+  --color-sand: #fffaf2;
+  --color-sand-warm: #fbf8f1;
+
+  /* --- Текст --- */
+  --color-ink: #0e2a2e;
+  --color-muted: #5c7278;
+  --color-faint: #8c9aa0;
+  --color-line: #e4ded0;
+
+  /* --- Статусы (всегда с иконкой и подписью, не цветом одним) --- */
+  --color-ok: #0ca30c;
+  --color-warn: #fab219;
+  --color-serious: #ec835a;
+  --color-critical: #d03b3b;
+
+  /* --- Палитра для графиков (validated: lightness band, chroma floor,
+         CVD-разделение и normal-vision floor на поверхности #FFFAF2).
+         Назначать строго по порядку, никогда не по кругу. --- */
+  --color-series-1: #2a78d6;
+  --color-series-2: #eb6834;
+  --color-series-3: #1baf7a;
+  --color-series-4: #eda100;
+  --color-series-5: #e87ba4;
+  --color-series-6: #008300;
+  --color-series-7: #4a3aa7;
+  --color-series-8: #e34948;
+
+  /* --- Хром графиков --- */
+  --color-grid: #e1e0d9;
+  --color-axis: #c3c2b7;
+
+  --font-display: "Playfair Display", Georgia, serif;
+  --font-sans: "Jost", system-ui, -apple-system, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: var(--color-sand);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  font-size: 15px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  /* место под нижнюю навигацию на телефоне */
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+h1,
+h2,
+h3,
+.display {
+  font-family: var(--font-display);
+  font-weight: 700;
+  color: var(--color-ocean);
+}
+
+/* Крупные цифры — Playfair, чтобы выделялись на фоне Jost */
+.figure {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Колонки чисел в таблицах — выравнивание по разрядам */
+.tnum {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Тач-таргет не меньше 44×44 — правило мобильного макета */
+.touch {
+  min-height: 44px;
+  min-width: 44px;
+  /*
+   * Мгновенная подсветка под пальцем: срабатывает раньше, чем CSS active,
+   * поэтому нажатие видно сразу, а не после отклика страницы.
+   * По умолчанию браузер рисует свою серо-синюю плашку — она не в брендовых
+   * цветах, поэтому задаём свою, приглушённый Gold Moon.
+   */
+  -webkit-tap-highlight-color: rgba(233, 146, 74, 0.18);
+  /* убирает задержку 300 мс, которую мобильный браузер держит на двойной тап */
+  touch-action: manipulation;
+}
+
+@media print {
+  .no-print {
+    display: none !important;
+  }
+  body {
+    background: #fff;
+  }
+}
