@@ -6,7 +6,7 @@
     "build": "next build",
     "start": "next start -p 3000",
     "db:generate": "drizzle-kit generate",
-    "db:migrate": "tsx scripts/migrate.ts",
+    "db:migrate": "tsx --env-file=.env scripts/migrate.ts",
     "db:seed": "tsx scripts/seed.ts",
     "db:reset": "rm -f luna.db luna.db-wal luna.db-shm && npm run db:migrate && npm run db:seed",
     "typecheck": "tsc --noEmit",
@@ -18,10 +18,10 @@
     "ainur:inspect": "tsx --env-file=.env scripts/inspect-ainur.ts",
     "ainur:tree": "tsx --env-file=.env scripts/ainur-tree.ts",
     "ainur:sales": "tsx --env-file=.env scripts/inspect-sales.ts",
+    "ainur:nosku": "tsx --env-file=.env scripts/inspect-nosku.ts",
     "import:johnny": "tsx --env-file=.env scripts/import-johnny.ts",
     "ainur:probe": "tsx --env-file=.env scripts/probe-history.ts",
     "ainur:backfill": "tsx --env-file=.env scripts/backfill-sales.ts",
-    "cost:import": "tsx --env-file=.env scripts/import-ainur-cost.ts",
     "sku:exclude": "tsx --env-file=.env scripts/exclude-sku.ts"
   },
   "dependencies": {
