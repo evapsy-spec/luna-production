@@ -22,7 +22,8 @@
     "import:johnny": "tsx --env-file=.env scripts/import-johnny.ts",
     "ainur:probe": "tsx --env-file=.env scripts/probe-history.ts",
     "ainur:backfill": "tsx --env-file=.env scripts/backfill-sales.ts",
-    "sku:exclude": "tsx --env-file=.env scripts/exclude-sku.ts"
+    "sku:exclude": "tsx --env-file=.env scripts/exclude-sku.ts",
+    "sync:scheduled": "tsx --env-file=.env scripts/sync-scheduled.ts"
   },
   "dependencies": {
     "@fontsource/jost": "^5.3.0",

@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
-import { desc } from "drizzle-orm";
+import { desc, eq } from "drizzle-orm";
 import { db, schema } from "@/lib/db/client";
 import { getCurrentUser, requireOwner, requireUser, writeAudit } from "@/lib/auth";
 import { ainurClient, getTokenInfo, isAinurReady, setAinurToken, clearAinurToken } from "@/lib/ainur/token";
@@ -12,6 +12,26 @@ import {
   syncStores,
   type SyncResult,
 } from "@/lib/ainur/sync";
+import {
+  acquireSyncLock,
+  releaseSyncLock,
+  currentSyncLock,
+  describeAge,
+  type LockAttempt,
+} from "@/lib/ainur/lock";
+import {
+  readSchedule,
+  writeSchedule,
+  nextRunAt,
+  describeSchedule,
+  describeUntil,
+} from "@/lib/ainur/schedule";
+import {
+  saveLastSyncResult,
+  readLastSyncResult,
+  SCHEDULED_ACTOR,
+  type StoredResult,
+} from "@/lib/ainur/last-result";
 import { SubmitButton } from "@/components/submit-button";
 import {
   Callout,
@@ -39,17 +59,6 @@ const KIND_RU: Record<string, string> = {
 };
 
 const SALES_PERIODS = [30, 60, 90, 180] as const;
-
-/** Куда складываем результат последнего запуска, чтобы показать его после перезагрузки */
-const RESULT_KEY = "last_sync_result";
-
-interface StoredResult {
-  at: string;
-  actor: string;
-  label: string;
-  results: SyncResult[];
-  error?: string;
-}
 
 function kindLabel(kind: string): string {
   return KIND_RU[kind] ?? kind;
@@ -89,15 +98,23 @@ function isoDaysAgo(days: number): string {
 // SERVER ACTIONS — синхронизация запускается только руками, по кнопке
 // ============================================================
 
-async function saveResult(stored: StoredResult): Promise<void> {
-  const value = JSON.stringify(stored);
-  await db
-    .insert(schema.settings)
-    .values({ key: RESULT_KEY, value, updatedAt: new Date().toISOString() })
-    .onConflictDoUpdate({
-      target: schema.settings.key,
-      set: { value, updatedAt: new Date().toISOString() },
-    });
+/**
+ * Берёт блокировку или уводит пользователя на страницу с объяснением.
+ *
+ * Блокировка общая с ночным таймером и живёт в базе: два прогона одновременно
+ * означают 429 от Ainur, а это мы уже проходили. Кнопка сама по себе от второго
+ * нажатия защищена (SubmitButton её гасит), но это не спасает от двух вкладок,
+ * двух людей и совпадения с ночным прогоном.
+ */
+function takeLockOrBail(holder: string): Extract<LockAttempt, { ok: true }> {
+  const attempt = acquireSyncLock(holder);
+  if (!attempt.ok) {
+    redirect(
+      `/sync?busy=1&who=${encodeURIComponent(attempt.heldBy)}` +
+        `&age=${encodeURIComponent(describeAge(attempt.ageMs))}`,
+    );
+  }
+  return attempt;
 }
 
 async function checkConnection() {
@@ -183,6 +200,7 @@ async function removeToken() {
 async function runEverything() {
   "use server";
   const user = await requireUser();
+  const lock = takeLockOrBail(user.name);
   const stored: StoredResult = {
     at: new Date().toISOString(),
     actor: user.name,
@@ -194,9 +212,11 @@ async function runEverything() {
     stored.results = await syncAll(user.name);
   } catch (err) {
     stored.error = (err as Error).message;
+  } finally {
+    releaseSyncLock(lock.lock);
   }
 
-  await saveResult(stored);
+  await saveLastSyncResult(stored);
   await writeAudit(user, {
     action: "SYNC",
     entityType: "Ainur",
@@ -210,6 +230,7 @@ async function runEverything() {
 async function runProducts() {
   "use server";
   const user = await requireUser();
+  const lock = takeLockOrBail(user.name);
   const stored: StoredResult = {
     at: new Date().toISOString(),
     actor: user.name,
@@ -221,9 +242,11 @@ async function runProducts() {
     stored.results = [await syncProducts(await ainurClient(), user.name)];
   } catch (err) {
     stored.error = (err as Error).message;
+  } finally {
+    releaseSyncLock(lock.lock);
   }
 
-  await saveResult(stored);
+  await saveLastSyncResult(stored);
   await writeAudit(user, {
     action: "SYNC",
     entityType: "Ainur",
@@ -242,6 +265,7 @@ async function runSales(formData: FormData) {
     ? raw
     : 60;
 
+  const lock = takeLockOrBail(user.name);
   const stored: StoredResult = {
     at: new Date().toISOString(),
     actor: user.name,
@@ -255,9 +279,11 @@ async function runSales(formData: FormData) {
     ];
   } catch (err) {
     stored.error = (err as Error).message;
+  } finally {
+    releaseSyncLock(lock.lock);
   }
 
-  await saveResult(stored);
+  await saveLastSyncResult(stored);
   await writeAudit(user, {
     action: "SYNC",
     entityType: "Ainur",
@@ -271,6 +297,7 @@ async function runSales(formData: FormData) {
 async function runStores() {
   "use server";
   const user = await requireUser();
+  const lock = takeLockOrBail(user.name);
   const stored: StoredResult = {
     at: new Date().toISOString(),
     actor: user.name,
@@ -282,9 +309,11 @@ async function runStores() {
     stored.results = [await syncStores(await ainurClient(), user.name)];
   } catch (err) {
     stored.error = (err as Error).message;
+  } finally {
+    releaseSyncLock(lock.lock);
   }
 
-  await saveResult(stored);
+  await saveLastSyncResult(stored);
   await writeAudit(user, {
     action: "SYNC",
     entityType: "Ainur",
@@ -293,6 +322,32 @@ async function runStores() {
   });
   revalidatePath("/sync");
   redirect("/sync?ran=1");
+}
+
+/**
+ * Включает и выключает автосинхронизацию.
+ *
+ * Выключатель живёт в базе, а не в юните systemd: таймер всё равно проснётся,
+ * но скрипт прочитает настройку и тихо выйдет. Так расписание можно погасить
+ * из приложения, не заходя на сервер по ssh — и, что важнее, не имея на это прав.
+ * Право менять — только у владельцев.
+ */
+async function toggleSchedule() {
+  "use server";
+  const user = await requireOwner();
+  const current = await readSchedule();
+  const next = { ...current, enabled: !current.enabled };
+  await writeSchedule(next);
+  await writeAudit(user, {
+    action: "SYNC",
+    entityType: "Ainur",
+    entityId: "schedule",
+    entityName: next.enabled
+      ? "Автосинхронизация включена"
+      : "Автосинхронизация выключена",
+  });
+  revalidatePath("/sync");
+  redirect(next.enabled ? "/sync?schedule=on" : "/sync?schedule=off");
 }
 
 // ============================================================
@@ -308,6 +363,10 @@ export default async function SyncPage({
     ran?: string;
     saved?: string;
     removed?: string;
+    busy?: string;
+    who?: string;
+    age?: string;
+    schedule?: string;
   }>;
 }) {
   const user = await getCurrentUser();
@@ -319,16 +378,25 @@ export default async function SyncPage({
 
   const lastTimes = await getLastSyncTimes();
 
-  const storedRows = await db.select().from(schema.settings);
-  const rawResult = storedRows.find((r) => r.key === RESULT_KEY)?.value;
-  let lastResult: StoredResult | null = null;
-  if (rawResult) {
-    try {
-      lastResult = JSON.parse(rawResult) as StoredResult;
-    } catch {
-      lastResult = null;
-    }
-  }
+  const lastResult = await readLastSyncResult();
+
+  const schedule = await readSchedule();
+  const nextRun = nextRunAt(schedule);
+  const runningNow = currentSyncLock();
+  const isOwner = user.role === "OWNER";
+
+  /**
+   * Последний прогон именно по расписанию. Нужен отдельно от «последнего
+   * запуска вообще»: если Ева нажимала кнопку днём, её запуск затрёт вид,
+   * и вопрос «а ночью-то оно сработало само?» останется без ответа.
+   */
+  const lastScheduled = await db
+    .select()
+    .from(schema.syncRuns)
+    .where(eq(schema.syncRuns.triggeredBy, SCHEDULED_ACTOR))
+    .orderBy(desc(schema.syncRuns.startedAt))
+    .limit(1);
+  const lastNight = lastScheduled[0] ?? null;
 
   const history = await db
     .select()
@@ -340,7 +408,7 @@ export default async function SyncPage({
     <>
       <PageHeader
         title="Синхронизация с Ainur"
-        subtitle="Запускается вручную, по кнопке. По расписанию Luna ничего не тянет."
+        subtitle="Каждое утро сама, плюс кнопка в любой момент. Два прогона одновременно невозможны."
       />
 
       <SectionTitle>Подключение к Ainur</SectionTitle>
@@ -353,6 +421,25 @@ export default async function SyncPage({
       {params.removed ? (
         <Callout tone="neutral" title="Токен удалён">
           Синхронизация с Ainur отключена. Данные в приложении остались на месте.
+        </Callout>
+      ) : null}
+      {params.busy ? (
+        <Callout tone="warn" title="Синхронизация уже идёт">
+          Запустил: {params.who || "неизвестно"}, {params.age || "только что"}{" "}
+          назад. Второй прогон не начала намеренно: Ainur ограничивает частоту
+          запросов и на двойной заход отвечает отказом. Подождите, пока
+          закончится первый, и обновите страницу.
+        </Callout>
+      ) : null}
+      {params.schedule === "on" ? (
+        <Callout tone="ok" title="Автосинхронизация включена">
+          Ночной прогон снова будет обновлять данные сам.
+        </Callout>
+      ) : null}
+      {params.schedule === "off" ? (
+        <Callout tone="neutral" title="Автосинхронизация выключена">
+          Ночной прогон больше не тронет данные. Кнопки на этой странице
+          работают как раньше.
         </Callout>
       ) : null}
 
@@ -481,6 +568,98 @@ export default async function SyncPage({
           </div>
         </Card>
       ) : null}
+
+      <SectionTitle>Автоматически, каждое утро</SectionTitle>
+      <Card className="mb-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex flex-wrap items-center gap-2">
+            {schedule.enabled ? (
+              <StatusPill tone="ok">Включена</StatusPill>
+            ) : (
+              <StatusPill tone="neutral">Выключена</StatusPill>
+            )}
+            <span className="text-sm text-[var(--color-ocean)]">
+              {describeSchedule(schedule)}
+            </span>
+          </div>
+
+          {isOwner ? (
+            <form action={toggleSchedule}>
+              <SubmitButton variant="secondary" pendingLabel="Меняю…">
+                {schedule.enabled ? "Выключить" : "Включить"}
+              </SubmitButton>
+            </form>
+          ) : null}
+        </div>
+
+        <div className="mt-4 grid gap-4 sm:grid-cols-2">
+          <div>
+            <div className="text-xs text-[var(--color-faint)]">
+              Следующий запуск
+            </div>
+            <div className="tnum text-sm text-[var(--color-ocean)]">
+              {schedule.enabled ? (
+                <>
+                  {formatDateTime(nextRun.toISOString())}{" "}
+                  <span className="text-[var(--color-muted)]">
+                    ({describeUntil(nextRun)})
+                  </span>
+                </>
+              ) : (
+                <span className="text-[var(--color-faint)]">
+                  не запустится, расписание выключено
+                </span>
+              )}
+            </div>
+          </div>
+
+          <div>
+            <div className="text-xs text-[var(--color-faint)]">
+              Последний раз сработало само
+            </div>
+            {lastNight ? (
+              <div className="flex flex-wrap items-center gap-2 text-sm">
+                <StatusPill tone={statusTone(lastNight.status)}>
+                  {statusLabel(lastNight.status)}
+                </StatusPill>
+                <span className="tnum text-[var(--color-ocean)]">
+                  {formatDateTime(lastNight.startedAt)}
+                </span>
+                <span className="tnum text-[var(--color-muted)]">
+                  {durationBetween(lastNight.startedAt, lastNight.finishedAt)}
+                </span>
+              </div>
+            ) : (
+              <div className="text-sm text-[var(--color-faint)]">
+                ещё ни разу — первый ночной прогон впереди
+              </div>
+            )}
+            {lastNight?.error ? (
+              <div className="mt-1 text-xs text-[var(--color-critical)]">
+                {lastNight.error}
+              </div>
+            ) : null}
+          </div>
+        </div>
+
+        {runningNow ? (
+          <div className="mt-4">
+            <Callout tone="warn" title="Прямо сейчас идёт синхронизация">
+              Запустил: {runningNow.holder}, начало{" "}
+              {formatDateTime(runningNow.since)}. Кнопки ниже пока не сработают —
+              это защита от отказа Ainur, а не поломка.
+            </Callout>
+          </div>
+        ) : null}
+
+        <p className="mt-4 mb-0 text-xs text-[var(--color-muted)]">
+          Порядок шагов всегда один: склады → товары с остатками → продажи за{" "}
+          {schedule.salesDays} дн. → перемещения. Между шагами пауза{" "}
+          {schedule.stepDelaySec} с: у Ainur есть ограничение на частоту запросов,
+          и без паузы он отвечает отказом. Ручные кнопки никуда не делись —
+          расписание их не заменяет, а дополняет.
+        </p>
+      </Card>
 
       <SectionTitle>Когда последний раз обновляли</SectionTitle>
       <Card padded={false}>

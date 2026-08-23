@@ -1,9 +1,10 @@
 /**
  * Синхронизация Ainur → Luna Production.
  *
- * Запускается вручную по кнопке «Обновить» (так решила Ева — не по расписанию).
- * Единственное исключение — перемещения между складами: они тянутся
- * автоматически вместе с любой синхронизацией остатков.
+ * Два входа: кнопка «Обновить» на странице «Синхронизация» и ночной таймер
+ * (scripts/sync-scheduled.ts). Оба берут общую блокировку из lock.ts — два
+ * прогона одновременно означали бы 429 от Ainur. Кнопку Ева просила оставить.
+ * Перемещения между складами тянутся автоматически вместе с остатками.
  *
  * Направление всегда одно: Ainur — источник правды по товарам, остаткам,
  * продажам и перемещениям. Luna ничего не записывает обратно в Ainur.
@@ -697,17 +698,48 @@ export async function syncMovements(
 // ПОЛНАЯ СИНХРОНИЗАЦИЯ — то, что делает кнопка «Обновить»
 // ============================================================
 
+/**
+ * Пауза между шагами синхронизации.
+ *
+ * У Ainur есть неописанный в документации лимит запросов: мы уже получали 429
+ * на /product. Повторы с нарастающей задержкой внутри клиента спасают от
+ * единичного отказа, но не от того, что четыре шага подряд выгребают API без
+ * передышки. Пауза между шагами стоит ровно столько, сколько ждёт человек,
+ * и снимает целый класс отказов.
+ *
+ * Для ночного прогона пауза щедрая — никто не ждёт. Для кнопки короткая:
+ * Ева смотрит на экран.
+ */
+export const STEP_DELAY_MANUAL_MS = 3_000;
+export const STEP_DELAY_SCHEDULED_MS = 20_000;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
 export async function syncAll(
   actor = "system",
-  opts: { salesFrom?: string } = {},
+  opts: { salesFrom?: string; stepDelayMs?: number } = {},
 ): Promise<SyncResult[]> {
   const client = await ainurClient();
   const results: SyncResult[] = [];
+  const pause = opts.stepDelayMs ?? STEP_DELAY_MANUAL_MS;
+
+  /**
+   * Ждём только если предыдущий шаг реально ходил в Ainur и получилось.
+   * После отказа пауза не нужна: клиент уже отбывал свои повторы с задержкой,
+   * а после падения лучше быстро дойти до конца и показать результат.
+   */
+  const breathe = async (): Promise<void> => {
+    if (pause > 0) await sleep(pause);
+  };
 
   results.push(await syncStores(client, actor));
+  await breathe();
 
   const products = await syncProducts(client, actor);
   results.push(products);
+  await breathe();
 
   // продажи: по умолчанию добираем последние 60 дней —
   // хватает для скорости продаж, не перегружая API
@@ -715,6 +747,8 @@ export async function syncAll(
     opts.salesFrom ??
     new Date(Date.now() - 60 * 24 * 3600 * 1000).toISOString();
   results.push(await syncSales(client, { from: salesFrom }, actor));
+  await breathe();
+
   results.push(await syncMovements(client, { from: salesFrom }, actor));
 
   return results;

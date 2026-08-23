@@ -1,0 +1,32 @@
+[Unit]
+Description=Luna Production — утренняя синхронизация с Ainur
+Documentation=file:///srv/luna/scripts/sync-scheduled.ts
+After=network-online.target luna.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=luna
+Group=luna
+WorkingDirectory=/srv/luna
+Environment=HOME=/home/luna
+Environment=NODE_ENV=production
+# Только через npm-скрипт: там прописан --env-file=.env. Без него DATABASE_FILE
+# не подхватится и синхронизация уедет в ./luna.db вместо настоящей базы.
+ExecStart=/usr/local/bin/npm run --silent sync:scheduled
+
+# Машина одноядерная. Синхронизация ходит по сети и ждёт Ainur, так что
+# уступить процессор приложению почти ничего не стоит.
+Nice=5
+# Полный прогон ~35 с плюс три паузы по 20 с. Час — с запасом на медленный Ainur.
+TimeoutStartSec=3600
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=read-only
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target
