@@ -1,0 +1,15 @@
+[Unit]
+Description=Luna Production — бэкап каждую ночь
+
+[Timer]
+# Сервер живёт в UTC. 19:30 UTC = 02:30 в Таиланде, 03:30 на Бали —
+# и Ева спит, и до утренней синхронизации Ainur ещё далеко.
+OnCalendar=*-*-* 19:30:00
+# Если сервер в это время был выключен — догоняем при следующем запуске.
+Persistent=true
+# Небольшой разброс, чтобы бэкап не стартовал ровно в секунду с чем-то ещё
+RandomizedDelaySec=120
+Unit=luna-backup.service
+
+[Install]
+WantedBy=timers.target

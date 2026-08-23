@@ -1,0 +1,35 @@
+[Unit]
+Description=Luna Production — ночной бэкап базы и загрузок
+Documentation=file:///srv/luna/ops/backup.sh
+After=network-online.target
+# Не запускаем, если приложение не поднято: значит на сервере что-то ремонтируют
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=luna
+Group=luna
+Environment=DATABASE_FILE=/srv/luna-data/luna.db
+Environment=UPLOADS_DIR=/srv/luna/public/uploads
+Environment=BACKUP_DIR=/srv/luna-backups
+Environment=BACKUP_KEEP_DAYS=30
+ExecStart=/usr/local/bin/luna-backup
+
+# Машина одноядерная — уступаем приложению, если Ева в это время работает
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=900
+
+# Минимальные права: писать можно только туда, куда нужно
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/srv/luna-backups /srv/luna-data
+ReadOnlyPaths=/srv/luna
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target
