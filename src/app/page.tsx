@@ -28,6 +28,7 @@ import {
 } from "@/components/ui";
 import { BarChart, RankBars, CoverageBar } from "@/components/charts";
 import { DeadlinePill, getUnitsByOrder, isOverdue, plural } from "./orders/_shared";
+import { LowStockTable } from "./_low-stock";
 
 export const metadata = { title: "Luna Production — EVA MOON" };
 
@@ -345,6 +346,9 @@ export default async function DashboardPage() {
           </div>
         </>
       ) : null}
+
+      {/* ---------- Пора заказывать: остатки на наших складах ---------- */}
+      <LowStockTable />
 
       {/* ---------- Заказы в производстве ---------- */}
       <SectionTitle>Сейчас в производстве</SectionTitle>
