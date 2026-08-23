@@ -732,6 +732,34 @@ export const syncRuns = sqliteTable(
   (t) => [index("sync_kind_idx").on(t.kind, t.startedAt)],
 );
 
+/**
+ * План пополнения — решения человека по позициям, которые заканчиваются.
+ *
+ * Живёт отдельной таблицей, а не полем в каталоге, по одной причине:
+ * синхронизация с Ainur перезаписывает товары и остатки целиком, и любое
+ * решение, записанное в product_variants, она бы стёрла при первом же обмене.
+ */
+export const replenishPlan = sqliteTable("replenish_plan", {
+  id: id(),
+  variantId: text("variant_id")
+    .notNull()
+    .unique()
+    .references(() => productVariants.id, { onDelete: "cascade" }),
+  /** на какой фабрике планируем шить */
+  factoryId: text("factory_id").references(() => factories.id, {
+    onDelete: "set null",
+  }),
+  /** «эту модель больше не повторяем» — убрать из списка пополнения */
+  excluded: integer("excluded", { mode: "boolean" }).notNull().default(false),
+  note: text("note"),
+  updatedById: text("updated_by_id").references(() => users.id, {
+    onDelete: "set null",
+  }),
+  updatedAt: text("updated_at")
+    .notNull()
+    .$defaultFn(() => new Date().toISOString()),
+});
+
 export const settings = sqliteTable("settings", {
   key: text("key").primaryKey(),
   value: text("value").notNull(),
