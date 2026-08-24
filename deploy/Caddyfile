@@ -7,6 +7,12 @@ luna.evamoon.boutique {
 		reverse_proxy 127.0.0.1:3100
 	}
 
+	# Клиент MCP может искать здесь OAuth. Уводим на тот же сервис, чтобы он
+	# получил честный 404, а не форму входа приложения с последующим 404.
+	handle /.well-known/oauth* {
+		reverse_proxy 127.0.0.1:3100
+	}
+
 	handle {
 		reverse_proxy 127.0.0.1:3000
 	}

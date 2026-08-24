@@ -34,12 +34,18 @@ if (!TOKEN || TOKEN.length < 24) {
   process.exit(1);
 }
 
-/** Ответ на запросы, не прошедшие проверку токена */
+/**
+ * Ответ на отказ.
+ *
+ * Важно: НИКОГДА не отдаём 401 с заголовком WWW-Authenticate. По протоколу MCP
+ * это сигнал «здесь OAuth», и клиент начинает искать OAuth-эндпоинты на нашем
+ * домене: /.well-known/oauth-authorization-server, /authorize и так далее. Эти
+ * пути ведут в само приложение, где пользователь видит форму входа Луны, вводит
+ * пароль и получает 404 — именно это и случилось при первой попытке подключения.
+ * Мы работаем по токену в заголовке, поэтому на неверный токен отвечаем 403.
+ */
 function deny(res: ServerResponse, code: number, message: string) {
-  res.writeHead(code, {
-    "content-type": "application/json",
-    ...(code === 401 ? { "www-authenticate": "Bearer" } : {}),
-  });
+  res.writeHead(code, { "content-type": "application/json" });
   res.end(JSON.stringify({ error: message }));
 }
 
@@ -196,9 +202,33 @@ function buildServer(): McpServer {
 const http = createServer(async (req, res) => {
   const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
 
+  /**
+   * Журнал запросов. Без него отладка подключения превращается в гадание:
+   * не видно, дошёл ли запрос вообще и был ли в нём заголовок с токеном.
+   * Само значение токена в журнал не попадает — только факт наличия.
+   */
+  const authHeader = req.headers.authorization ?? "";
+  const hasAuth = authHeader.length > 0;
+  console.log(
+    `${req.method} ${url.pathname} заголовок=${hasAuth ? "есть" : "НЕТ"} agent=${
+      (req.headers["user-agent"] ?? "-").toString().slice(0, 60)
+    }`,
+  );
+
   if (url.pathname === "/health") {
     res.writeHead(200, { "content-type": "application/json" });
     res.end(JSON.stringify({ ok: true, service: "luna-mcp" }));
+    return;
+  }
+
+  /**
+   * Клиент может попробовать найти здесь OAuth. Отвечаем честным 404, чтобы
+   * он сразу понял: OAuth тут нет, надо использовать заголовок. Эти пути
+   * специально уведены с приложения, иначе пользователь попадает на форму
+   * входа Луны и получает 404 после ввода пароля.
+   */
+  if (url.pathname.startsWith("/.well-known/")) {
+    deny(res, 404, "OAuth здесь не используется, доступ по заголовку Authorization");
     return;
   }
 
@@ -208,7 +238,13 @@ const http = createServer(async (req, res) => {
   }
 
   if (!authorized(req)) {
-    deny(res, 401, "Нужен заголовок Authorization: Bearer <токен>");
+    deny(
+      res,
+      403,
+      hasAuth
+        ? "Токен не совпадает. Возьми текущий из /srv/luna/.env и обнови значение заголовка в настройках коннектора."
+        : "Нет заголовка Authorization: Bearer <токен>.",
+    );
     return;
   }
 
