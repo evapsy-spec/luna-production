@@ -320,13 +320,22 @@ export async function ordersStatus(opts: { showMoney?: boolean } = {}) {
     lines.map((l) => [l.orderId, { qty: Number(l.quantity), made: Number(l.produced) }]),
   );
 
-  /** фактический срок пошива по завершённым заказам, дней */
+  /**
+   * Фактический срок пошива, дней. Считаем только по заказам, которые реально
+   * заводились в Луне: у истории, залитой импортом, дата создания — это дата
+   * импорта, а не дата заказа, поэтому разница выходит нулевой или
+   * отрицательной. Порог в 3 дня отсекает именно такие записи: быстрее чем за
+   * три дня не шьётся ничего.
+   */
+  const MIN_PLAUSIBLE_DAYS = 3;
   const leadTimes: number[] = [];
   for (const o of orders) {
     if (o.actualReadyAt && o.createdAt) {
       const d =
         (Date.parse(o.actualReadyAt) - Date.parse(o.createdAt)) / 86400000;
-      if (Number.isFinite(d) && d >= 0 && d < 400) leadTimes.push(Math.round(d));
+      if (Number.isFinite(d) && d >= MIN_PLAUSIBLE_DAYS && d < 400) {
+        leadTimes.push(Math.round(d));
+      }
     }
   }
   leadTimes.sort((a, b) => a - b);
@@ -336,6 +345,10 @@ export async function ordersStatus(opts: { showMoney?: boolean } = {}) {
   return {
     medianLeadDays,
     leadTimeSampleSize: leadTimes.length,
+    leadTimeNote:
+      leadTimes.length === 0
+        ? "Фактический срок пошива посчитать пока не на чем: вся история заказов залита импортом, и дата создания в ней — дата импорта. Срок начнёт считаться по заказам, которые заводятся в Луне."
+        : undefined,
     orders: orders.map((o) => {
       const u = byOrder.get(o.id);
       const overdue =
