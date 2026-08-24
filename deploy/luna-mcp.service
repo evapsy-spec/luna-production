@@ -12,7 +12,7 @@ EnvironmentFile=/srv/luna/.env
 Environment=NODE_ENV=production
 Environment=MCP_PORT=3100
 Environment=MCP_HOST=127.0.0.1
-ExecStart=/usr/local/bin/npx tsx mcp/server.ts
+ExecStart=/srv/luna/node_modules/.bin/tsx mcp/server.ts
 Restart=always
 RestartSec=5
 StandardOutput=journal
