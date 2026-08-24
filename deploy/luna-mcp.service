@@ -1,0 +1,29 @@
+[Unit]
+Description=Luna Production MCP (доступ к данным из чата с Луной)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=luna
+Group=luna
+WorkingDirectory=/srv/luna
+EnvironmentFile=/srv/luna/.env
+Environment=NODE_ENV=production
+Environment=MCP_PORT=3100
+Environment=MCP_HOST=127.0.0.1
+ExecStart=/usr/local/bin/npx tsx mcp/server.ts
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=luna-mcp
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=/srv/luna /srv/luna-data
+
+[Install]
+WantedBy=multi-user.target

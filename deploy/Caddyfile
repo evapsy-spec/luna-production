@@ -1,0 +1,20 @@
+luna.evamoon.boutique {
+	encode zstd gzip
+
+	# MCP-коннектор: отдельный процесс на 3100, доступ по токену внутри него.
+	# Стоит выше общего обработчика, иначе запрос уйдёт в приложение.
+	handle /mcp* {
+		reverse_proxy 127.0.0.1:3100
+	}
+
+	handle {
+		reverse_proxy 127.0.0.1:3000
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "SAMEORIGIN"
+		Referrer-Policy "strict-origin-when-cross-origin"
+	}
+}

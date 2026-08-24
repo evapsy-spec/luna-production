@@ -48,6 +48,10 @@ trap - ERR
 
 echo "== перезапуск"
 sudo systemctl restart luna
+if systemctl list-unit-files luna-mcp.service >/dev/null 2>&1; then
+  sudo systemctl restart luna-mcp || true
+fi
 sleep 4
 systemctl is-active luna
+systemctl is-active luna-mcp 2>/dev/null || echo "luna-mcp: не установлен"
 echo "== готово"

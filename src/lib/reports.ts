@@ -1,0 +1,359 @@
+/**
+ * Отчёты для внешних потребителей — MCP-коннектора и телеграм-бота.
+ *
+ * Здесь только чтение. Функции возвращают простые объекты, готовые к отдаче
+ * наружу: без объектов Drizzle, без null там, где ожидается число, и с уже
+ * посчитанной маржой — чтобы потребитель не считал её сам и не считал по-разному.
+ *
+ * Правило про деньги: если вызывающая сторона не имеет права видеть суммы,
+ * она передаёт showMoney: false, и денежные поля не попадают в ответ вообще
+ * (не нули, не «скрыто» — их просто нет).
+ */
+import { and, asc, desc, eq, gte, inArray, like, lte, or, sql } from "drizzle-orm";
+import { db, schema } from "@/lib/db/client";
+
+const MAX_ROWS = 200;
+
+function monthOf(day: string): string {
+  return day.slice(0, 7);
+}
+
+function round(n: number): number {
+  return Math.round(n * 100) / 100;
+}
+
+// ============================================================
+// Продажи по месяцам
+// ============================================================
+
+export interface SalesByMonthInput {
+  /** SKU целиком или его часть; можно несколько через запятую */
+  sku?: string;
+  /** название коллекции целиком или часть */
+  collection?: string;
+  /** YYYY-MM-DD, по умолчанию — 24 месяца назад */
+  from?: string;
+  /** YYYY-MM-DD, по умолчанию — сегодня */
+  to?: string;
+  showMoney?: boolean;
+}
+
+export interface SalesMonthRow {
+  month: string;
+  units: number;
+  revenue?: number;
+}
+
+export async function salesByMonth(input: SalesByMonthInput) {
+  const showMoney = input.showMoney !== false;
+  const to = input.to ?? new Date().toISOString().slice(0, 10);
+  const from =
+    input.from ??
+    new Date(Date.now() - 730 * 24 * 3600 * 1000).toISOString().slice(0, 10);
+
+  const conds = [
+    gte(schema.variantSalesDaily.day, from),
+    lte(schema.variantSalesDaily.day, to),
+  ];
+
+  const skuList = (input.sku ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  if (skuList.length) {
+    const skuConds = skuList.map((s) =>
+      like(schema.productVariants.sku, `%${s}%`),
+    );
+    conds.push(skuConds.length === 1 ? skuConds[0] : or(...skuConds)!);
+  }
+  if (input.collection) {
+    conds.push(like(schema.collections.name, `%${input.collection}%`));
+  }
+
+  const rows = await db
+    .select({
+      day: schema.variantSalesDaily.day,
+      units: schema.variantSalesDaily.units,
+      revenue: schema.variantSalesDaily.revenue,
+      sku: schema.productVariants.sku,
+      product: schema.products.name,
+      collection: schema.collections.name,
+    })
+    .from(schema.variantSalesDaily)
+    .innerJoin(
+      schema.productVariants,
+      eq(schema.variantSalesDaily.variantId, schema.productVariants.id),
+    )
+    .innerJoin(
+      schema.products,
+      eq(schema.productVariants.productId, schema.products.id),
+    )
+    .innerJoin(
+      schema.collections,
+      eq(schema.products.collectionId, schema.collections.id),
+    )
+    .where(and(...conds));
+
+  const byMonth = new Map<string, { units: number; revenue: number }>();
+  const skus = new Set<string>();
+  let units = 0;
+  let revenue = 0;
+
+  for (const r of rows) {
+    const m = monthOf(r.day);
+    const e = byMonth.get(m) ?? { units: 0, revenue: 0 };
+    e.units += Number(r.units);
+    e.revenue += Number(r.revenue);
+    byMonth.set(m, e);
+    skus.add(r.sku);
+    units += Number(r.units);
+    revenue += Number(r.revenue);
+  }
+
+  const months: SalesMonthRow[] = [...byMonth.entries()]
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([month, e]) => ({
+      month,
+      units: e.units,
+      ...(showMoney ? { revenue: round(e.revenue) } : {}),
+    }));
+
+  // разбивка по годам — чтобы сразу видеть сезонность и сравнение год к году
+  const byYear = new Map<string, { units: number; revenue: number }>();
+  for (const m of months) {
+    const y = m.month.slice(0, 4);
+    const e = byYear.get(y) ?? { units: 0, revenue: 0 };
+    e.units += m.units;
+    e.revenue += m.revenue ?? 0;
+    byYear.set(y, e);
+  }
+
+  return {
+    period: { from, to },
+    matchedSkus: skus.size,
+    totals: { units, ...(showMoney ? { revenueThb: round(revenue) } : {}) },
+    byYear: [...byYear.entries()].map(([year, e]) => ({
+      year,
+      units: e.units,
+      ...(showMoney ? { revenueThb: round(e.revenue) } : {}),
+    })),
+    months,
+    note:
+      skus.size === 0
+        ? "Ничего не найдено. Проверь SKU или название коллекции — поиск идёт по части строки."
+        : undefined,
+  };
+}
+
+// ============================================================
+// Карточка изделия
+// ============================================================
+
+export interface ProductCardInput {
+  /** SKU целиком или часть, либо часть названия модели */
+  query: string;
+  showMoney?: boolean;
+}
+
+export async function productCard(input: ProductCardInput) {
+  const showMoney = input.showMoney !== false;
+  const q = input.query.trim();
+  if (!q) return { found: 0, variants: [] };
+
+  const variants = await db
+    .select({
+      variantId: schema.productVariants.id,
+      sku: schema.productVariants.sku,
+      color: schema.productVariants.color,
+      size: schema.productVariants.size,
+      price: schema.productVariants.price,
+      purchaseCost: schema.productVariants.ainurPurchaseCost,
+      productId: schema.products.id,
+      product: schema.products.name,
+      collection: schema.collections.name,
+      archived: schema.productVariants.isArchived,
+    })
+    .from(schema.productVariants)
+    .innerJoin(
+      schema.products,
+      eq(schema.productVariants.productId, schema.products.id),
+    )
+    .innerJoin(
+      schema.collections,
+      eq(schema.products.collectionId, schema.collections.id),
+    )
+    .where(
+      or(
+        like(schema.productVariants.sku, `%${q}%`),
+        like(schema.products.name, `%${q}%`),
+      ),
+    )
+    .orderBy(asc(schema.productVariants.sku))
+    .limit(MAX_ROWS);
+
+  if (variants.length === 0) {
+    return {
+      found: 0,
+      variants: [],
+      note: "Ничего не найдено. Поиск идёт по части SKU или названия модели.",
+    };
+  }
+
+  const ids = variants.map((v) => v.variantId);
+
+  const stock = await db
+    .select({
+      variantId: schema.variantStock.variantId,
+      quantity: schema.variantStock.quantity,
+      warehouse: schema.warehouses.name,
+    })
+    .from(schema.variantStock)
+    .innerJoin(
+      schema.warehouses,
+      eq(schema.variantStock.warehouseId, schema.warehouses.id),
+    )
+    .where(inArray(schema.variantStock.variantId, ids));
+
+  const since = new Date(Date.now() - 365 * 24 * 3600 * 1000)
+    .toISOString()
+    .slice(0, 10);
+
+  const sales = await db
+    .select({
+      variantId: schema.variantSalesDaily.variantId,
+      units: sql<number>`COALESCE(SUM(${schema.variantSalesDaily.units}), 0)`,
+      revenue: sql<number>`COALESCE(SUM(${schema.variantSalesDaily.revenue}), 0)`,
+    })
+    .from(schema.variantSalesDaily)
+    .where(
+      and(
+        inArray(schema.variantSalesDaily.variantId, ids),
+        gte(schema.variantSalesDaily.day, since),
+      ),
+    )
+    .groupBy(schema.variantSalesDaily.variantId);
+
+  const salesBy = new Map(
+    sales.map((s) => [s.variantId, { units: Number(s.units), revenue: Number(s.revenue) }]),
+  );
+
+  const stockBy = new Map<string, Record<string, number>>();
+  for (const s of stock) {
+    const e = stockBy.get(s.variantId) ?? {};
+    if (Number(s.quantity) !== 0) e[s.warehouse] = Number(s.quantity);
+    stockBy.set(s.variantId, e);
+  }
+
+  return {
+    found: variants.length,
+    variants: variants.map((v) => {
+      const sold = salesBy.get(v.variantId);
+      const stockMap = stockBy.get(v.variantId) ?? {};
+      const totalStock = Object.values(stockMap).reduce((a, b) => a + b, 0);
+      const price = v.price ?? null;
+      const cost = v.purchaseCost ?? null;
+      const marginPct =
+        price && cost && price > 0 ? round(((price - cost) / price) * 100) : null;
+
+      return {
+        sku: v.sku,
+        model: v.product,
+        collection: v.collection,
+        color: v.color,
+        size: v.size,
+        archived: v.archived,
+        stockByWarehouse: stockMap,
+        totalStock,
+        soldLast12m: sold?.units ?? 0,
+        ...(showMoney
+          ? {
+              priceThb: price,
+              purchaseCostThb: cost,
+              marginPerUnitThb: price && cost ? round(price - cost) : null,
+              marginPct,
+              revenueLast12mThb: round(sold?.revenue ?? 0),
+            }
+          : {}),
+      };
+    }),
+  };
+}
+
+// ============================================================
+// Заказы на пошив
+// ============================================================
+
+export async function ordersStatus(opts: { showMoney?: boolean } = {}) {
+  const showMoney = opts.showMoney !== false;
+  const today = new Date().toISOString().slice(0, 10);
+
+  const orders = await db
+    .select({
+      id: schema.productionOrders.id,
+      number: schema.productionOrders.number,
+      status: schema.productionOrders.status,
+      plannedReadyAt: schema.productionOrders.plannedReadyAt,
+      actualReadyAt: schema.productionOrders.actualReadyAt,
+      totalCost: schema.productionOrders.snapshotTotalCost,
+      createdAt: schema.productionOrders.createdAt,
+      factory: schema.factories.name,
+    })
+    .from(schema.productionOrders)
+    .innerJoin(
+      schema.factories,
+      eq(schema.productionOrders.factoryId, schema.factories.id),
+    )
+    .orderBy(desc(schema.productionOrders.createdAt))
+    .limit(MAX_ROWS);
+
+  const lines = await db
+    .select({
+      orderId: schema.productionOrderLines.orderId,
+      quantity: sql<number>`COALESCE(SUM(${schema.productionOrderLines.quantity}), 0)`,
+      produced: sql<number>`COALESCE(SUM(${schema.productionOrderLines.qtyProduced}), 0)`,
+    })
+    .from(schema.productionOrderLines)
+    .groupBy(schema.productionOrderLines.orderId);
+
+  const byOrder = new Map(
+    lines.map((l) => [l.orderId, { qty: Number(l.quantity), made: Number(l.produced) }]),
+  );
+
+  /** фактический срок пошива по завершённым заказам, дней */
+  const leadTimes: number[] = [];
+  for (const o of orders) {
+    if (o.actualReadyAt && o.createdAt) {
+      const d =
+        (Date.parse(o.actualReadyAt) - Date.parse(o.createdAt)) / 86400000;
+      if (Number.isFinite(d) && d >= 0 && d < 400) leadTimes.push(Math.round(d));
+    }
+  }
+  leadTimes.sort((a, b) => a - b);
+  const medianLeadDays =
+    leadTimes.length > 0 ? leadTimes[Math.floor(leadTimes.length / 2)] : null;
+
+  return {
+    medianLeadDays,
+    leadTimeSampleSize: leadTimes.length,
+    orders: orders.map((o) => {
+      const u = byOrder.get(o.id);
+      const overdue =
+        o.status !== "RECEIVED" &&
+        o.status !== "CANCELLED" &&
+        !o.actualReadyAt &&
+        Boolean(o.plannedReadyAt && o.plannedReadyAt < today);
+      return {
+        number: o.number,
+        factory: o.factory,
+        status: o.status,
+        plannedReadyAt: o.plannedReadyAt,
+        actualReadyAt: o.actualReadyAt,
+        units: u?.qty ?? 0,
+        produced: u?.made ?? 0,
+        overdue,
+        ...(showMoney ? { totalCostThb: round(o.totalCost) } : {}),
+      };
+    }),
+  };
+}
