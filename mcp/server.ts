@@ -1,7 +1,8 @@
 /**
  * MCP-сервер Luna Production — доступ к данным из чата с Луной без макбука.
  *
- * Слушает 127.0.0.1, наружу его выставляет Caddy по адресу /mcp того же домена.
+ * Слушает 127.0.0.1, наружу его выставляет Caddy по адресу того же домена
+ * (пути /mcp, /authorize, /consent, /token, /register, /.well-known/oauth*).
  * Отдельного поддомена и сертификата не нужно, новых портов в файрволе тоже.
  *
  * Только чтение. Записывающих инструментов здесь нет и появиться они должны
@@ -9,22 +10,28 @@
  * свободно, менять данные только с подтверждением человека, а цены, скидки,
  * остатки, письма клиентам, живой сайт и деньги — никогда.
  *
- * Доступ по токену в заголовке Authorization: Bearer <MCP_TOKEN>.
- * Токен генерируется на самом сервере (см. README раздел «MCP») и вставляется
- * в настройки коннектора Claude вручную.
+ * Авторизация — через настоящий OAuth (см. ./oauth.ts): у кастомных
+ * коннекторов claude.ai нет поля для токена в заголовке, только OAuth,
+ * поэтому человек один раз вводит тот же секрет (MCP_TOKEN) в форму входа
+ * на этой странице, а не в поле коннектора. Сам /mcp по-прежнему проверяет
+ * тот же самый токен — просто теперь он приезжает от Клода честным путём.
  *
  * Запуск: npm run mcp   (systemd-юнит luna-mcp)
  */
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import express, { type Request, type Response } from "express";
 import { z } from "zod";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { mcpAuthRouter, getOAuthProtectedResourceMetadataUrl } from "@modelcontextprotocol/sdk/server/auth/router.js";
+import { requireBearerAuth } from "@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js";
 import { salesByMonth, productCard, ordersStatus } from "@/lib/reports";
 import { getReplenish, LOW_STOCK_THRESHOLD } from "@/lib/replenish";
+import { createOAuthProvider, createConsentHandler } from "./oauth.js";
 
 const PORT = Number(process.env.MCP_PORT ?? 3100);
 const HOST = process.env.MCP_HOST ?? "127.0.0.1";
 const TOKEN = (process.env.MCP_TOKEN ?? "").trim();
+const PUBLIC_URL = (process.env.MCP_PUBLIC_URL ?? "https://luna.evamoon.boutique").replace(/\/+$/, "");
 
 if (!TOKEN || TOKEN.length < 24) {
   console.error(
@@ -34,39 +41,9 @@ if (!TOKEN || TOKEN.length < 24) {
   process.exit(1);
 }
 
-/**
- * Ответ на отказ.
- *
- * Важно: НИКОГДА не отдаём 401 с заголовком WWW-Authenticate. По протоколу MCP
- * это сигнал «здесь OAuth», и клиент начинает искать OAuth-эндпоинты на нашем
- * домене: /.well-known/oauth-authorization-server, /authorize и так далее. Эти
- * пути ведут в само приложение, где пользователь видит форму входа Луны, вводит
- * пароль и получает 404 — именно это и случилось при первой попытке подключения.
- * Мы работаем по токену в заголовке, поэтому на неверный токен отвечаем 403.
- */
-function deny(res: ServerResponse, code: number, message: string) {
-  res.writeHead(code, { "content-type": "application/json" });
-  res.end(JSON.stringify({ error: message }));
-}
-
-function authorized(req: IncomingMessage): boolean {
-  const header = req.headers.authorization ?? "";
-  const m = /^Bearer\s+(.+)$/i.exec(header.trim());
-  const given = m?.[1]?.trim() ?? "";
-  if (given.length !== TOKEN.length) return false;
-  // сравнение без ранних выходов, чтобы время ответа не подсказывало префикс
-  let diff = 0;
-  for (let i = 0; i < TOKEN.length; i++) {
-    diff |= given.charCodeAt(i) ^ TOKEN.charCodeAt(i);
-  }
-  return diff === 0;
-}
-
 function textResult(value: unknown) {
   return {
-    content: [
-      { type: "text" as const, text: JSON.stringify(value, null, 1) },
-    ],
+    content: [{ type: "text" as const, text: JSON.stringify(value, null, 1) }],
   };
 }
 
@@ -75,10 +52,7 @@ function textResult(value: unknown) {
  * и не надо хранить состояние между вызовами.
  */
 function buildServer(): McpServer {
-  const server = new McpServer({
-    name: "luna-production",
-    version: "1.0.0",
-  });
+  const server = new McpServer({ name: "luna-production", version: "1.0.0" });
 
   server.registerTool(
     "sales_by_month",
@@ -91,20 +65,13 @@ function buildServer(): McpServer {
         "разбивку по годам, чтобы видеть сезонность и сравнение год к году. " +
         "История есть с января 2024 года.",
       inputSchema: {
-        sku: z
-          .string()
-          .optional()
-          .describe("SKU или его часть; несколько — через запятую"),
-        collection: z
-          .string()
-          .optional()
-          .describe("название коллекции или его часть"),
+        sku: z.string().optional().describe("SKU или его часть; несколько — через запятую"),
+        collection: z.string().optional().describe("название коллекции или его часть"),
         from: z.string().optional().describe("начало периода, YYYY-MM-DD"),
         to: z.string().optional().describe("конец периода, YYYY-MM-DD"),
       },
     },
-    async ({ sku, collection, from, to }) =>
-      textResult(await salesByMonth({ sku, collection, from, to })),
+    async ({ sku, collection, from, to }) => textResult(await salesByMonth({ sku, collection, from, to })),
   );
 
   server.registerTool(
@@ -117,9 +84,7 @@ function buildServer(): McpServer {
         "остатки по складам, продажи за последние 12 месяцев. " +
         "Себестоимость заполнена у 955 SKU из 965.",
       inputSchema: {
-        query: z
-          .string()
-          .describe("часть SKU или названия модели, например: silk bralette"),
+        query: z.string().describe("часть SKU или названия модели, например: silk bralette"),
       },
     },
     async ({ query }) => textResult(await productCard({ query })),
@@ -137,14 +102,8 @@ function buildServer(): McpServer {
         "не лежало»). Позиции, помеченные в приложении как «не повторять», по " +
         "умолчанию скрыты.",
       inputSchema: {
-        collection: z
-          .string()
-          .optional()
-          .describe("ограничить одной коллекцией (точное имя)"),
-        onlySoldOut: z
-          .boolean()
-          .optional()
-          .describe("только те, что распродались в ноль при живом спросе"),
+        collection: z.string().optional().describe("ограничить одной коллекцией (точное имя)"),
+        onlySoldOut: z.boolean().optional().describe("только те, что распродались в ноль при живом спросе"),
         limit: z.number().int().min(1).max(300).optional(),
       },
     },
@@ -170,12 +129,8 @@ function buildServer(): McpServer {
           collection: r.collectionName,
           color: r.color,
           size: r.size,
-          stock: Object.fromEntries(
-            data.warehouses.map((w, i) => [w.name, r.cells[i]?.qty ?? null]),
-          ),
-          soldOutAt: data.warehouses
-            .filter((_, i) => r.cells[i]?.soldOut)
-            .map((w) => w.name),
+          stock: Object.fromEntries(data.warehouses.map((w, i) => [w.name, r.cells[i]?.qty ?? null])),
+          soldOutAt: data.warehouses.filter((_, i) => r.cells[i]?.soldOut).map((w) => w.name),
           onOrderUnits: r.onOrder,
         })),
       });
@@ -199,96 +154,78 @@ function buildServer(): McpServer {
   return server;
 }
 
-const http = createServer(async (req, res) => {
-  const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
+const provider = createOAuthProvider(TOKEN);
+const resourceUrl = new URL(`${PUBLIC_URL}/mcp`);
+const resourceMetadataUrl = getOAuthProtectedResourceMetadataUrl(resourceUrl);
 
-  /**
-   * Журнал запросов. Без него отладка подключения превращается в гадание:
-   * не видно, дошёл ли запрос вообще и был ли в нём заголовок с токеном.
-   * Само значение токена в журнал не попадает — только факт наличия.
-   */
-  const authHeader = req.headers.authorization ?? "";
-  const hasAuth = authHeader.length > 0;
+const app = express();
+app.disable("x-powered-by");
+app.set("trust proxy", true); // за Caddy — чтобы req.protocol/host были верными
+
+/**
+ * Журнал запросов. Без него отладка подключения превращается в гадание:
+ * не видно, дошёл ли запрос вообще и был ли в нём заголовок с токеном.
+ * Само значение токена и пароля из формы входа в журнал не попадает.
+ */
+app.use((req, _res, next) => {
+  const hasAuth = Boolean(req.headers.authorization);
   console.log(
-    `${req.method} ${url.pathname} заголовок=${hasAuth ? "есть" : "НЕТ"} agent=${
+    `${req.method} ${req.path} заголовок=${hasAuth ? "есть" : "НЕТ"} agent=${
       (req.headers["user-agent"] ?? "-").toString().slice(0, 60)
     }`,
   );
-
-  if (url.pathname === "/health") {
-    res.writeHead(200, { "content-type": "application/json" });
-    res.end(JSON.stringify({ ok: true, service: "luna-mcp" }));
-    return;
-  }
-
-  /**
-   * Клиент может попробовать найти здесь OAuth. Отвечаем честным 404, чтобы
-   * он сразу понял: OAuth тут нет, надо использовать заголовок. Эти пути
-   * специально уведены с приложения, иначе пользователь попадает на форму
-   * входа Луны и получает 404 после ввода пароля.
-   */
-  if (url.pathname.startsWith("/.well-known/")) {
-    deny(res, 404, "OAuth здесь не используется, доступ по заголовку Authorization");
-    return;
-  }
-
-  if (url.pathname !== "/mcp") {
-    deny(res, 404, "Не найдено");
-    return;
-  }
-
-  if (!authorized(req)) {
-    deny(
-      res,
-      403,
-      hasAuth
-        ? "Токен не совпадает. Возьми текущий из /srv/luna/.env и обнови значение заголовка в настройках коннектора."
-        : "Нет заголовка Authorization: Bearer <токен>.",
-    );
-    return;
-  }
-
-  let body: unknown;
-  if (req.method === "POST") {
-    const chunks: Buffer[] = [];
-    let size = 0;
-    for await (const chunk of req) {
-      size += (chunk as Buffer).length;
-      if (size > 1_000_000) {
-        deny(res, 413, "Слишком большой запрос");
-        return;
-      }
-      chunks.push(chunk as Buffer);
-    }
-    const raw = Buffer.concat(chunks).toString("utf8");
-    try {
-      body = raw ? JSON.parse(raw) : undefined;
-    } catch {
-      deny(res, 400, "Тело запроса не разобралось как JSON");
-      return;
-    }
-  }
-
-  const server = buildServer();
-  const transport = new StreamableHTTPServerTransport({
-    sessionIdGenerator: undefined,
-    enableJsonResponse: true,
-  });
-
-  res.on("close", () => {
-    void transport.close();
-    void server.close();
-  });
-
-  try {
-    await server.connect(transport);
-    await transport.handleRequest(req, res, body);
-  } catch (e) {
-    console.error("Ошибка обработки запроса:", e);
-    if (!res.headersSent) deny(res, 500, "Внутренняя ошибка");
-  }
+  next();
 });
 
-http.listen(PORT, HOST, () => {
-  console.log(`luna-mcp слушает http://${HOST}:${PORT}/mcp`);
+app.get("/health", (_req, res) => {
+  res.json({ ok: true, service: "luna-mcp" });
+});
+
+// /authorize, /token, /register, /.well-known/oauth-authorization-server,
+// /.well-known/oauth-protected-resource/mcp — всё стандартное отсюда.
+app.use(
+  mcpAuthRouter({
+    provider,
+    issuerUrl: new URL(PUBLIC_URL),
+    resourceServerUrl: resourceUrl,
+    resourceName: "Luna Production",
+  }),
+);
+
+// Наша собственная форма входа шлёт сюда — сознательно НЕ под /authorize/*,
+// чтобы не попасть под внутренний body-parser роутера авторизации выше.
+app.post("/consent", express.urlencoded({ extended: false }), createConsentHandler(TOKEN));
+
+app.all(
+  "/mcp",
+  express.json({ limit: "1mb" }),
+  requireBearerAuth({ verifier: provider, resourceMetadataUrl }),
+  async (req: Request, res: Response) => {
+    const server = buildServer();
+    const transport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: undefined,
+      enableJsonResponse: true,
+    });
+
+    res.on("close", () => {
+      void transport.close();
+      void server.close();
+    });
+
+    try {
+      await server.connect(transport);
+      await transport.handleRequest(req, res, req.method === "POST" ? req.body : undefined);
+    } catch (e) {
+      console.error("Ошибка обработки MCP-запроса:", e);
+      if (!res.headersSent) res.status(500).json({ error: "Внутренняя ошибка" });
+    }
+  },
+);
+
+app.use((_req, res) => {
+  res.status(404).json({ error: "Не найдено" });
+});
+
+app.listen(PORT, HOST, () => {
+  console.log(`luna-mcp слушает http://${HOST}:${PORT}/mcp (OAuth issuer: ${PUBLIC_URL})`);
 });
