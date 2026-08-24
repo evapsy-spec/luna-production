@@ -54,4 +54,17 @@ fi
 sleep 4
 systemctl is-active luna
 systemctl is-active luna-mcp 2>/dev/null || echo "luna-mcp: не установлен"
+
+# Caddyfile живёт в репозитории, но сам Caddy читает /etc/caddy/Caddyfile —
+# без этого шага правки в deploy/Caddyfile молча не долетают до Caddy, и
+# новые пути (например, для OAuth у MCP) 404-ятся или уходят не туда.
+# Именно это один раз уже случилось — см. историю чата от 2026-08-24.
+if [ -f "$APP/deploy/Caddyfile" ] && command -v caddy >/dev/null 2>&1; then
+  if ! cmp -s "$APP/deploy/Caddyfile" /etc/caddy/Caddyfile 2>/dev/null; then
+    echo "== обновляем Caddyfile"
+    sudo cp "$APP/deploy/Caddyfile" /etc/caddy/Caddyfile
+    sudo caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+    sudo systemctl reload caddy
+  fi
+fi
 echo "== готово"

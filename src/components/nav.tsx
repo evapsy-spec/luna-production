@@ -18,6 +18,7 @@ const ITEMS: NavItem[] = [
   { href: "/", label: "Главная", icon: "◉" },
   { href: "/orders", label: "Заказы", icon: "✂" },
   { href: "/replenish", label: "На исходе", icon: "⚑" },
+  { href: "/transfers", label: "Перемещения", icon: "⇄" },
   { href: "/collections", label: "Коллекции", icon: "❖" },
   { href: "/fabrics", label: "Ткани", icon: "▤" },
   { href: "/factories", label: "Фабрики", icon: "⌂" },
