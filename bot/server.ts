@@ -53,16 +53,12 @@ async function main() {
   const me = await bot.api.getMe();
   console.log(`[bot] запускаюсь как @${me.username} (long polling)`);
 
-  await bot.api.setMyCommands([
-    { command: "start", description: "Начать / кто я" },
-    { command: "whoami", description: "Кто я, вижу ли деньги" },
-    { command: "остатки", description: "Остатки меньше нормы (или карточка по запросу)" },
-    { command: "продажи", description: "Продажи по месяцам" },
-    { command: "заказы", description: "Статус заказов на пошив" },
-    { command: "задача", description: "Поставить поручение: /задача Имя текст" },
-    { command: "задачи", description: "Открытые поручения на вас" },
-    { command: "выполнено", description: "Закрыть поручение: /выполнено номер" },
-  ]);
+  // Пробовали зарегистрировать список команд через setMyCommands, чтобы все
+  // подсвечивались в Telegram как /start — не вышло: Telegram принимает в
+  // этом списке только [a-z0-9_], кириллица (/остатки, /продажи и т.д.)
+  // отклоняется с BOT_COMMAND_INVALID, и вызов валит запуск бота целиком.
+  // Это ограничение платформы, не наше — команды на кириллице работают как
+  // обычно, просто останутся обычным текстом, не активной ссылкой.
 
   startDigestScheduler(bot);
 
