@@ -1,0 +1,30 @@
+[Unit]
+Description=Луна-бот (Telegram, long polling)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=luna
+Group=luna
+WorkingDirectory=/srv/luna
+EnvironmentFile=/srv/luna/.env
+Environment=NODE_ENV=production
+Environment=BOT_HEALTH_PORT=3200
+Environment=BOT_HEALTH_HOST=127.0.0.1
+ExecStart=/srv/luna/node_modules/.bin/tsx bot/server.ts
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=luna-bot
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=/srv/luna /srv/luna-data
+
+[Install]
+WantedBy=multi-user.target
+

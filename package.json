@@ -23,7 +23,10 @@
     "ainur:probe": "tsx --env-file=.env scripts/probe-history.ts",
     "ainur:backfill": "tsx --env-file=.env scripts/backfill-sales.ts",
     "sku:exclude": "tsx --env-file=.env scripts/exclude-sku.ts",
-    "mcp": "tsx --env-file=.env mcp/server.ts"
+    "mcp": "tsx --env-file=.env mcp/server.ts",
+    "bot": "tsx --env-file=.env bot/server.ts",
+    "bot:watchdog": "tsx --env-file=.env scripts/bot-watchdog.ts",
+    "bot:add-user": "tsx --env-file=.env scripts/bot-add-user.ts"
   },
   "dependencies": {
     "@fontsource/jost": "^5.3.0",
@@ -35,6 +38,7 @@
     "exceljs": "^4.4.0",
     "express": "^5.2.1",
     "express-rate-limit": "^8.6.2",
+    "grammy": "^1.45.1",
     "jose": "^6.2.9",
     "next": "^16.3.1",
     "pkce-challenge": "^5.0.1",

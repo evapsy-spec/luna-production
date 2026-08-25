@@ -1062,3 +1062,105 @@ export const stockMovementsRelations = relations(stockMovements, ({ one }) => ({
     relationName: "toWarehouse",
   }),
 }));
+
+// ============================================================
+// ЛУНА-БОТ (Telegram) — добавлено 25.08.2026
+// ============================================================
+
+/** Категории чатов, где присутствует бот. FACTORY заложена на будущее. */
+export const BOT_CHAT_TYPES = ["TEAM", "DESIGNER", "FACTORY"] as const;
+export type BotChatType = (typeof BOT_CHAT_TYPES)[number];
+
+/**
+ * Каталог чатов бота — какой чат, какого типа, и для DESIGNER — какой бренд.
+ * Заполняется вручную командой /привязать_чат или напрямую в базе; источник —
+ * Excel-каталог чатов, который ведёт Ева.
+ */
+export const botChats = sqliteTable("bot_chats", {
+  id: id(),
+  chatId: text("chat_id").notNull().unique(), // telegram chat id (у групп отрицательный)
+  title: text("title").notNull(), // название группы в Telegram на момент привязки
+  chatType: text("chat_type").notNull(), // TEAM | DESIGNER | FACTORY
+  brandName: text("brand_name"), // для DESIGNER — бренд/поставщик из каталога Ainur
+  payerName: text("payer_name"), // юр.лицо для банка, если известно
+  currency: text("currency"),
+  notes: text("notes"),
+  isActive: integer("is_active", { mode: "boolean" }).notNull().default(true),
+  createdAt: now(),
+});
+
+/**
+ * Люди, которые могут писать боту в личку и получать от него сообщения.
+ * seesMoney=false — единственное ограничение по деньгам (Наталья), см.
+ * claude/luna-telegram-bot-plan.md, раздел «Ещё три решения».
+ * canConfirmMoney — уже отдельно: подтверждать денежные/ценовые действия
+ * (и запись в финфайл) может только Константин и Ева, даже если видеть суммы
+ * может и Ольга — это разные права, путать нельзя.
+ */
+export const botUsers = sqliteTable("bot_users", {
+  id: id(),
+  telegramUserId: text("telegram_user_id").notNull().unique(),
+  telegramUsername: text("telegram_username"),
+  name: text("name").notNull(), // Константин / Ева / Ольга / Наталья
+  seesMoney: integer("sees_money", { mode: "boolean" }).notNull().default(true),
+  canConfirmMoney: integer("can_confirm_money", { mode: "boolean" }).notNull().default(false),
+  isActive: integer("is_active", { mode: "boolean" }).notNull().default(true),
+  createdAt: now(),
+});
+
+/** Явные команды-поручения через /задача — без угадывания из свободной переписки. */
+export const BOT_TASK_STATUSES = ["OPEN", "DONE", "CANCELLED"] as const;
+export type BotTaskStatus = (typeof BOT_TASK_STATUSES)[number];
+
+export const botTasks = sqliteTable(
+  "bot_tasks",
+  {
+    id: id(),
+    chatId: text("chat_id").notNull(), // где создана
+    assignedToUserId: text("assigned_to_user_id").references(() => botUsers.id, {
+      onDelete: "set null",
+    }),
+    assignedToName: text("assigned_to_name").notNull(), // на случай если исполнитель ещё не писал /start
+    assignedByName: text("assigned_by_name").notNull(),
+    description: text("description").notNull(),
+    dueAt: text("due_at"),
+    status: text("status").notNull().default("OPEN"),
+    createdAt: now(),
+    completedAt: text("completed_at"),
+  },
+  (t) => [
+    index("bot_tasks_status_idx").on(t.status),
+    index("bot_tasks_assignee_idx").on(t.assignedToUserId),
+  ],
+);
+
+export const botTasksRelations = relations(botTasks, ({ one }) => ({
+  assignedTo: one(botUsers, {
+    fields: [botTasks.assignedToUserId],
+    references: [botUsers.id],
+  }),
+}));
+
+/**
+ * Денежные/ценовые действия по команде в боте — исполняются только после
+ * явного подтверждения инлайн-кнопкой («LUNA рекомендует, человек делает»).
+ * Пока нет ни одного реального action_type: запись цены в Shopify и запись в
+ * финфайл ждут своих интеграций (см. открытые вопросы в плане). Таблица и
+ * обработчик готовы, чтобы подключить их без переделки бота.
+ */
+export const BOT_PENDING_STATUSES = ["PENDING", "CONFIRMED", "CANCELLED", "EXPIRED"] as const;
+export type BotPendingStatus = (typeof BOT_PENDING_STATUSES)[number];
+
+export const botPendingActions = sqliteTable("bot_pending_actions", {
+  id: id(),
+  chatId: text("chat_id").notNull(),
+  requestedByName: text("requested_by_name").notNull(),
+  actionType: text("action_type").notNull(), // например PRICE_CHANGE, FINANCE_ENTRY
+  payload: text("payload").notNull(), // JSON с деталями действия
+  summary: text("summary").notNull(), // человекочитаемый текст на кнопке подтверждения
+  status: text("status").notNull().default("PENDING"),
+  createdAt: now(),
+  resolvedAt: text("resolved_at"),
+  resolvedByName: text("resolved_by_name"),
+});
+
