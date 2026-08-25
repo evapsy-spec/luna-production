@@ -39,9 +39,30 @@ bot.catch((err) => {
   console.error("[bot] необработанная ошибка обработчика:", err.error);
 });
 
+// Если что-то зависнет или упадёт мимо grammy (например, зависший запрос к
+// Ainur в обработчике) — раньше это было не видно вообще нигде. Теперь хотя
+// бы попадёт в лог, и journalctl покажет причину.
+process.on("unhandledRejection", (reason) => {
+  console.error("[bot] необработанный reject:", reason);
+});
+process.on("uncaughtException", (err) => {
+  console.error("[bot] необработанное исключение:", err);
+});
+
 async function main() {
   const me = await bot.api.getMe();
   console.log(`[bot] запускаюсь как @${me.username} (long polling)`);
+
+  await bot.api.setMyCommands([
+    { command: "start", description: "Начать / кто я" },
+    { command: "whoami", description: "Кто я, вижу ли деньги" },
+    { command: "остатки", description: "Остатки меньше нормы (или карточка по запросу)" },
+    { command: "продажи", description: "Продажи по месяцам" },
+    { command: "заказы", description: "Статус заказов на пошив" },
+    { command: "задача", description: "Поставить поручение: /задача Имя текст" },
+    { command: "задачи", description: "Открытые поручения на вас" },
+    { command: "выполнено", description: "Закрыть поручение: /выполнено номер" },
+  ]);
 
   startDigestScheduler(bot);
 
@@ -62,4 +83,3 @@ main().catch((err) => {
   console.error("[bot] фатальная ошибка запуска:", err);
   process.exit(1);
 });
-
