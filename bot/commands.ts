@@ -27,6 +27,24 @@ function esc(s: string): string {
 
 const HTML = { parse_mode: "HTML" as const };
 
+const DATA_TIMEOUT_MS = 10_000;
+
+/**
+ * На сервере /заказы (и потенциально другие команды с данными) иногда
+ * зависают намертво без единой ошибки в логе — похоже на конфликт при
+ * обращении к SQLite из отдельного процесса бота, пока не выяснили причину
+ * до конца. Пока не разобрались — оборачиваем в таймаут, чтобы бот отвечал
+ * человеку вместо вечного молчания.
+ */
+function withTimeout<T>(promise: Promise<T>, label: string): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) =>
+      setTimeout(() => reject(new Error(`[timeout] ${label} не ответил за ${DATA_TIMEOUT_MS / 1000}с`)), DATA_TIMEOUT_MS),
+    ),
+  ]);
+}
+
 export function registerCommands(bot: Bot): void {
   bot.command("start", async (ctx) => {
     const caller = await resolveCaller(ctx);
@@ -66,22 +84,27 @@ export function registerCommands(bot: Bot): void {
     if (!caller) return ctx.reply(NOT_RECOGNIZED_TEXT);
 
     const query = ctx.match?.toString().trim();
-    if (query) {
-      const card = await productCard({ query, showMoney: caller.seesMoney });
-      await ctx.reply(`<pre>${esc(JSON.stringify(card, null, 1))}</pre>`, HTML);
-    } else {
-      const data = await getReplenish({ excluded: "hide" });
-      const rows = data.rows.slice(0, 20);
-      const lines = rows.map((r) => {
-        const stock = data.warehouses
-          .map((w, i) => `${w.name}: ${r.cells[i]?.qty ?? "—"}`)
-          .join(", ");
-        return `• ${esc(r.sku)} (${esc(r.productName)}) — ${stock}`;
-      });
-      await ctx.reply(
-        `Меньше ${LOW_STOCK_THRESHOLD} шт (первые ${rows.length} из ${data.totalActive}):\n` +
-          (lines.join("\n") || "Пусто — ничего не заканчивается."),
-      );
+    try {
+      if (query) {
+        const card = await withTimeout(productCard({ query, showMoney: caller.seesMoney }), "/остатки");
+        await ctx.reply(`<pre>${esc(JSON.stringify(card, null, 1))}</pre>`, HTML);
+      } else {
+        const data = await withTimeout(getReplenish({ excluded: "hide" }), "/остатки");
+        const rows = data.rows.slice(0, 20);
+        const lines = rows.map((r) => {
+          const stock = data.warehouses
+            .map((w, i) => `${w.name}: ${r.cells[i]?.qty ?? "—"}`)
+            .join(", ");
+          return `• ${esc(r.sku)} (${esc(r.productName)}) — ${stock}`;
+        });
+        await ctx.reply(
+          `Меньше ${LOW_STOCK_THRESHOLD} шт (первые ${rows.length} из ${data.totalActive}):\n` +
+            (lines.join("\n") || "Пусто — ничего не заканчивается."),
+        );
+      }
+    } catch (err) {
+      console.error("[bot] /остатки не ответил:", err);
+      return ctx.reply("Не получилось получить данные (сервер не ответил вовремя). Попробуйте ещё раз чуть позже.");
     }
     await logBotAudit({
       actorName: caller.name,
@@ -96,8 +119,16 @@ export function registerCommands(bot: Bot): void {
     const caller = await resolveCaller(ctx);
     if (!caller) return ctx.reply(NOT_RECOGNIZED_TEXT);
     const query = ctx.match?.toString().trim();
-    const data = await salesByMonth({ sku: query || undefined, showMoney: caller.seesMoney });
-    await ctx.reply(`<pre>${esc(JSON.stringify(data, null, 1).slice(0, 3500))}</pre>`, HTML);
+    try {
+      const data = await withTimeout(
+        salesByMonth({ sku: query || undefined, showMoney: caller.seesMoney }),
+        "/продажи",
+      );
+      await ctx.reply(`<pre>${esc(JSON.stringify(data, null, 1).slice(0, 3500))}</pre>`, HTML);
+    } catch (err) {
+      console.error("[bot] /продажи не ответил:", err);
+      return ctx.reply("Не получилось получить данные (сервер не ответил вовремя). Попробуйте ещё раз чуть позже.");
+    }
     await logBotAudit({
       actorName: caller.name,
       action: "BOT_QUERY",
@@ -110,8 +141,13 @@ export function registerCommands(bot: Bot): void {
   bot.command("заказы", async (ctx) => {
     const caller = await resolveCaller(ctx);
     if (!caller) return ctx.reply(NOT_RECOGNIZED_TEXT);
-    const data = await ordersStatus({ showMoney: caller.seesMoney });
-    await ctx.reply(`<pre>${esc(JSON.stringify(data, null, 1).slice(0, 3500))}</pre>`, HTML);
+    try {
+      const data = await withTimeout(ordersStatus({ showMoney: caller.seesMoney }), "/заказы");
+      await ctx.reply(`<pre>${esc(JSON.stringify(data, null, 1).slice(0, 3500))}</pre>`, HTML);
+    } catch (err) {
+      console.error("[bot] /заказы не ответил:", err);
+      return ctx.reply("Не получилось получить данные (сервер не ответил вовремя). Попробуйте ещё раз чуть позже.");
+    }
     await logBotAudit({
       actorName: caller.name,
       action: "BOT_QUERY",
@@ -250,4 +286,3 @@ export async function requestConfirmation(
     parse_mode: "HTML",
   });
 }
-
