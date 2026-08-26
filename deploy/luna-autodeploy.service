@@ -1,0 +1,9 @@
+[Unit]
+Description=Luna Production — проверка GitHub и автодеплой при новых коммитах
+
+[Service]
+Type=oneshot
+# Если деплой обычно запускается не под root, а под отдельным пользователем —
+# замени строку ниже на User=<твой пользователь>.
+User=root
+ExecStart=/srv/luna/deploy/auto-deploy.sh

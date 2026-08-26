@@ -1,13 +1,19 @@
 #!/usr/bin/env bash
 # Деплой Luna Production на сервер. Запуск на сервере: /srv/luna/deploy.sh
+# (обычно не руками, а через luna-autodeploy.timer — см. deploy/README-autodeploy.md)
 #
-# Код едет через bare-репозиторий /srv/luna.git — туда пушит макбук.
+# Код тянем из remote'а $DEPLOY_SOURCE_REMOTE (по умолчанию "origin" —
+# это GitHub, настраивается один раз, см. deploy/README-autodeploy.md).
+# Если origin ещё не настроен, откатываемся на старый способ — bare-репозиторий
+# /srv/luna.git, куда раньше пушил макбук — чтобы ничего не сломать по пути.
+#
 # Если сборка падает, откатываемся на предыдущий коммит и поднимаем его же:
 # лучше вчерашняя рабочая версия, чем 502 у Евы на планшете.
 set -euo pipefail
 
 APP=/srv/luna
 BARE=/srv/luna.git
+SOURCE_REMOTE="${DEPLOY_SOURCE_REMOTE:-origin}"
 cd "$APP"
 
 # Переменные окружения нужны и служебным скриптам тоже: без них миграции
@@ -19,9 +25,14 @@ if [ -f "$APP/.env" ]; then
   set +a
 fi
 
-echo "== забираем код"
 PREV=$(git rev-parse HEAD)
-git fetch --quiet "$BARE" main
+if git remote get-url "$SOURCE_REMOTE" >/dev/null 2>&1; then
+  echo "== забираем код (remote: $SOURCE_REMOTE)"
+  git fetch --quiet "$SOURCE_REMOTE" main
+else
+  echo "== забираем код (remote '$SOURCE_REMOTE' не настроен, беру из $BARE)"
+  git fetch --quiet "$BARE" main
+fi
 git reset --hard --quiet FETCH_HEAD
 echo "   $PREV -> $(git rev-parse HEAD)"
 

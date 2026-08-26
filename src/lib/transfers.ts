@@ -5,7 +5,14 @@
  *
  * 1. Пополнение со склада Fotesko. Fotesko — буферный склад, Пхукет и
  *    Панган — торговые точки. Если на точке меньше LOW_STOCK_THRESHOLD, а
- *    на Fotesko есть остаток — предлагаем довезти оттуда.
+ *    на Fotesko есть остаток — предлагаем довезти оттуда. Если НЕ хватает
+ *    сразу обеим точкам — это одна поездка с Fotesko, а не два независимых
+ *    предложения: остаток на Fotesko один, и если бы мы предлагали
+ *    отправить его целиком «на Пхукет» и отдельно ещё раз целиком «на
+ *    Панган», получилось бы, что рекомендуем увезти больше, чем реально
+ *    есть на складе. Поэтому такие случаи — одна строка с раскладкой по
+ *    точкам (кому сколько), и весь остаток Fotesko делится между ними, не
+ *    задваивается. Приоритет — той точке, где сейчас меньше.
  *
  * 2. Выравнивание Пхукет ↔ Панган. Смысл в том, чтобы на обеих точках было
  *    примерно одинаковое количество одной модели — это отдельная задача от
@@ -21,12 +28,25 @@
  *
  * Только чтение и только рекомендация — само перемещение человек делает
  * руками в Ainur/на складе, здесь это не фиксируется.
+ *
+ * Порядок и фильтры. По умолчанию наверху — модели, которые реально
+ * продавались за последние 12 месяцев (активные), внизу — то, что не
+ * продавалось вовсе (возможно, мёртвый остаток). Плюс два необязательных
+ * фильтра: минимум продаж за 12 мес и минимум штук в самой рекомендации —
+ * чтобы не тратить рейс ради одной футболки, которую никто не берёт.
  */
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, gte, inArray } from "drizzle-orm";
 import { db, schema } from "@/lib/db/client";
 import { WATCHED_WAREHOUSES, WAREHOUSE_META, LOW_STOCK_THRESHOLD } from "@/lib/replenish";
 
 const [FOTESKO, PHUKET, PHANGAN] = WATCHED_WAREHOUSES;
+
+/** Одна точка назначения внутри строки — сколько там сейчас и сколько везём именно туда */
+export interface TransferSplit {
+  to: string;
+  toQty: number;
+  suggestedQty: number;
+}
 
 export interface TransferRow {
   variantId: string;
@@ -37,11 +57,24 @@ export interface TransferRow {
   color: string | null;
   collectionName: string;
   from: string;
-  to: string;
   fromQty: number;
-  toQty: number;
-  suggestedQty: number;
   reason: "restock" | "balance";
+  soldLast12m: number;
+  /**
+   * Обычно одна точка назначения. Для пополнения с Fotesko, когда не
+   * хватает и Пхукету, и Пангану одновременно, — обе, с раскладкой
+   * остатка Fotesko между ними.
+   */
+  splits: TransferSplit[];
+  /** сумма suggestedQty по всем splits — сколько всего везти этой строкой */
+  totalQty: number;
+}
+
+export interface TransferFilters {
+  /** показывать только строки, где продано за 12 мес не меньше этого */
+  minSold12m?: number;
+  /** показывать только строки, где предлагаемое количество (totalQty) не меньше этого */
+  minSuggestedQty?: number;
 }
 
 export interface TransferResult {
@@ -50,13 +83,14 @@ export interface TransferResult {
   warehouseOrder: string[];
 }
 
-export async function getTransferRecommendations(): Promise<TransferResult> {
+export async function getTransferRecommendations(
+  filters: TransferFilters = {},
+): Promise<TransferResult> {
   const found = await db
     .select({ id: schema.warehouses.id, name: schema.warehouses.name })
     .from(schema.warehouses)
     .where(inArray(schema.warehouses.name, [...WATCHED_WAREHOUSES]));
 
-  const idByName = new Map(found.map((w) => [w.name, w.id]));
   const whIds = found.map((w) => w.id);
 
   const bySource: Record<string, TransferRow[]> = {
@@ -108,6 +142,30 @@ export async function getTransferRecommendations(): Promise<TransferResult> {
     .where(eq(schema.replenishPlan.excluded, true));
   const excluded = new Set(excludedRows.map((r) => r.variantId));
 
+  const variantIds = [...new Set(stock.map((s) => s.variantId))];
+  const since = new Date(Date.now() - 365 * 24 * 3600 * 1000).toISOString().slice(0, 10);
+  const salesRows = variantIds.length
+    ? await db
+        .select({
+          variantId: schema.variantSalesDaily.variantId,
+          units: schema.variantSalesDaily.units,
+        })
+        .from(schema.variantSalesDaily)
+        .where(
+          and(
+            inArray(schema.variantSalesDaily.variantId, variantIds),
+            gte(schema.variantSalesDaily.day, since),
+          ),
+        )
+    : [];
+  const soldLast12mByVariant = new Map<string, number>();
+  for (const r of salesRows) {
+    soldLast12mByVariant.set(
+      r.variantId,
+      (soldLast12mByVariant.get(r.variantId) ?? 0) + Number(r.units),
+    );
+  }
+
   interface Bucket {
     sku: string;
     productId: string;
@@ -144,13 +202,15 @@ export async function getTransferRecommendations(): Promise<TransferResult> {
     variantId: string,
     b: Bucket,
     from: string,
-    to: string,
     fromQty: number,
-    toQty: number,
-    suggestedQty: number,
+    splits: TransferSplit[],
     reason: "restock" | "balance",
   ) {
-    if (suggestedQty <= 0) return;
+    const totalQty = splits.reduce((sum, s) => sum + s.suggestedQty, 0);
+    if (totalQty <= 0) return;
+    const soldLast12m = soldLast12mByVariant.get(variantId) ?? 0;
+    if (filters.minSold12m !== undefined && soldLast12m < filters.minSold12m) return;
+    if (filters.minSuggestedQty !== undefined && totalQty < filters.minSuggestedQty) return;
     bySource[from].push({
       variantId,
       sku: b.sku,
@@ -160,11 +220,11 @@ export async function getTransferRecommendations(): Promise<TransferResult> {
       color: b.color,
       collectionName: b.collectionName,
       from,
-      to,
       fromQty,
-      toQty,
-      suggestedQty,
       reason,
+      soldLast12m,
+      splits,
+      totalQty,
     });
   }
 
@@ -173,23 +233,69 @@ export async function getTransferRecommendations(): Promise<TransferResult> {
     const Ph = b.qty[PHUKET];
     const Pn = b.qty[PHANGAN];
 
-    if (Ph < thr) {
-      if (F > 0) pushRow(variantId, b, FOTESKO, PHUKET, F, Ph, Math.min(F, thr - Ph), "restock");
-      if (Pn >= thr && Pn > Ph) {
-        pushRow(variantId, b, PHANGAN, PHUKET, Pn, Ph, Math.floor((Pn - Ph) / 2), "balance");
+    // --- 1) Пополнение с Fotesko: одна строка на обе точки сразу ---
+    const needPh = Ph < thr ? thr - Ph : 0;
+    const needPn = Pn < thr ? thr - Pn : 0;
+    if (F > 0 && (needPh > 0 || needPn > 0)) {
+      // Кому не хватает больше — того обслуживаем первым, если остатка
+      // Fotesko не хватает на обоих сразу.
+      const order: Array<[string, number, number]> =
+        Ph <= Pn
+          ? [
+              [PHUKET, needPh, Ph],
+              [PHANGAN, needPn, Pn],
+            ]
+          : [
+              [PHANGAN, needPn, Pn],
+              [PHUKET, needPh, Ph],
+            ];
+      let remaining = F;
+      const splits: TransferSplit[] = [];
+      for (const [name, need, curQty] of order) {
+        if (need <= 0 || remaining <= 0) continue;
+        const send = Math.min(need, remaining);
+        if (send > 0) {
+          splits.push({ to: name, toQty: curQty, suggestedQty: send });
+          remaining -= send;
+        }
       }
+      pushRow(variantId, b, FOTESKO, F, splits, "restock");
     }
-    if (Pn < thr) {
-      if (F > 0) pushRow(variantId, b, FOTESKO, PHANGAN, F, Pn, Math.min(F, thr - Pn), "restock");
-      if (Ph >= thr && Ph > Pn) {
-        pushRow(variantId, b, PHUKET, PHANGAN, Ph, Pn, Math.floor((Ph - Pn) / 2), "balance");
-      }
+
+    // --- 2) Выравнивание Пхукет ↔ Панган (не зависит от Fotesko) ---
+    if (Ph < thr && Pn >= thr && Pn > Ph) {
+      pushRow(
+        variantId,
+        b,
+        PHANGAN,
+        Pn,
+        [{ to: PHUKET, toQty: Ph, suggestedQty: Math.floor((Pn - Ph) / 2) }],
+        "balance",
+      );
+    }
+    if (Pn < thr && Ph >= thr && Ph > Pn) {
+      pushRow(
+        variantId,
+        b,
+        PHUKET,
+        Ph,
+        [{ to: PHANGAN, toQty: Pn, suggestedQty: Math.floor((Ph - Pn) / 2) }],
+        "balance",
+      );
     }
   }
 
   let total = 0;
   for (const wh of WATCHED_WAREHOUSES) {
-    bySource[wh].sort((a, c) => a.toQty - c.toQty || a.sku.localeCompare(c.sku));
+    // Наверху — модели с реальным движением за 12 мес (больше продано —
+    // выше), внизу — то, что не продавалось вовсе. Внутри одной активности
+    // сортируем как раньше: сначала где «там» пусто (по самой нуждающейся
+    // из точек в строке).
+    bySource[wh].sort((a, c) => {
+      const minToA = Math.min(...a.splits.map((s) => s.toQty));
+      const minToC = Math.min(...c.splits.map((s) => s.toQty));
+      return c.soldLast12m - a.soldLast12m || minToA - minToC || a.sku.localeCompare(c.sku);
+    });
     total += bySource[wh].length;
   }
 
