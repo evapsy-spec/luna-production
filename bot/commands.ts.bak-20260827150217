@@ -30,9 +30,11 @@ const HTML = { parse_mode: "HTML" as const };
 const DATA_TIMEOUT_MS = 10_000;
 
 /**
- * withTimeout — защита от реально медленного Ainur (документированно
- * отвечает по 2,5 минуты на месяц продаж), а не от того, что раньше считали
- * причиной молчания бота (см. ниже).
+ * На сервере /заказы (и потенциально другие команды с данными) иногда
+ * зависают намертво без единой ошибки в логе — похоже на конфликт при
+ * обращении к SQLite из отдельного процесса бота, пока не выяснили причину
+ * до конца. Пока не разобрались — оборачиваем в таймаут, чтобы бот отвечал
+ * человеку вместо вечного молчания.
  */
 function withTimeout<T>(promise: Promise<T>, label: string): Promise<T> {
   return Promise.race([
@@ -41,54 +43,6 @@ function withTimeout<T>(promise: Promise<T>, label: string): Promise<T> {
       setTimeout(() => reject(new Error(`[timeout] ${label} не ответил за ${DATA_TIMEOUT_MS / 1000}с`)), DATA_TIMEOUT_MS),
     ),
   ]);
-}
-
-/**
- * НАЙДЕНО И ИСПРАВЛЕНО 27.08.2026: настоящая причина, почему /остатки,
- * /продажи, /заказы, /задача, /задачи, /выполнено молчали ВСЕГДА (ноль
- * ответов, ноль строк в логе — не таймаут и не конфликт SQLite, как думали
- * раньше).
- *
- * Telegram сам решает, считать ли "/слово" в тексте сообщения командой
- * (entity bot_command) — и делает это только для ASCII: /^[a-z0-9_]{1,32}$/i.
- * Кириллические "/остатки" и т.п. НЕ получают entity bot_command вообще —
- * ни в мобильном клиенте, ни в Telegram Web. grammy's bot.command(...)
- * фильтрует именно по этой entity, а не по тексту — значит, для кириллицы
- * он просто никогда не сработает, независимо от кода внутри обработчика.
- * Раньше это один раз неправильно продиагностировали как "команды на
- * кириллице работают, просто без кликабельной подсветки" (см. старый
- * комментарий в server.ts) — на деле они не работали НИКАК.
- *
- * Проверено 27.08.2026: за всё время работы бота (с 25.08) в
- * journalctl -u luna-bot нет ни одного упоминания остатки/продажи/заказы/
- * задач/выполнено — то есть эти шесть обработчиков не выполнились ни разу,
- * хотя команды отправлялись многократно (видно в самой переписке).
- *
- * Исправление: у каждой команды теперь ДВА триггера на один обработчик —
- * официальная ASCII-команда (английское слово по смыслу — stock/sales/
- * orders/task/tasks/done, работает через bot.command(), кладём её в меню
- * через setMyCommands) и текстовый alias на кириллице через bot.hears()
- * (это уже не зависит от entity — просто сравнение текста сообщения,
- * кириллица тут не проблема). Старую привычку печатать по-русски ломать не
- * пришлось.
- */
-function argsAfterFirstWord(ctx: { message?: { text?: string; caption?: string } }): string {
-  const text = (ctx.message?.text ?? ctx.message?.caption ?? "").toString();
-  const firstSpace = text.indexOf(" ");
-  return firstSpace === -1 ? "" : text.slice(firstSpace + 1).trim();
-}
-
-/** Регистрирует один обработчик под ASCII-командой И кириллическим alias'ом. */
-function registerBoth(
-  bot: Bot,
-  asciiCommand: string,
-  cyrillicWord: string,
-  handler: (ctx: any) => Promise<unknown>,
-): void {
-  bot.command(asciiCommand, handler);
-  // ^\/?слово(\s|$) — не хватать "остатки" внутри обычной фразы, только
-  // если сообщение начинается с этого слова (с "/" или без).
-  bot.hears(new RegExp(`^/?${cyrillicWord}(?:\\s|$)`, "iu"), handler);
 }
 
 export function registerCommands(bot: Bot): void {
@@ -103,9 +57,8 @@ export function registerCommands(bot: Bot): void {
       return;
     }
     await ctx.reply(
-      `Привет, ${esc(caller.name)}! Я Луна-бот. Команды (можно и по-русски, и через /):\n` +
-        "/stock (остатки), /sales (продажи), /orders (заказы), " +
-        "/task (задача), /tasks (задачи), /done (выполнено), /whoami.",
+      `Привет, ${esc(caller.name)}! Я Луна-бот. Команды: /остатки, /продажи, /заказы, ` +
+        "/задача, /задачи, /выполнено, /whoami.",
     );
     await logBotAudit({
       actorName: caller.name,
@@ -126,17 +79,17 @@ export function registerCommands(bot: Bot): void {
     );
   });
 
-  registerBoth(bot, "stock", "остатки", async (ctx) => {
+  bot.command("остатки", async (ctx) => {
     const caller = await resolveCaller(ctx);
     if (!caller) return ctx.reply(NOT_RECOGNIZED_TEXT);
 
-    const query = argsAfterFirstWord(ctx);
+    const query = ctx.match?.toString().trim();
     try {
       if (query) {
-        const card = await withTimeout(productCard({ query, showMoney: caller.seesMoney }), "/stock");
+        const card = await withTimeout(productCard({ query, showMoney: caller.seesMoney }), "/остатки");
         await ctx.reply(`<pre>${esc(JSON.stringify(card, null, 1))}</pre>`, HTML);
       } else {
-        const data = await withTimeout(getReplenish({ excluded: "hide" }), "/stock");
+        const data = await withTimeout(getReplenish({ excluded: "hide" }), "/остатки");
         const rows = data.rows.slice(0, 20);
         const lines = rows.map((r) => {
           const stock = data.warehouses
@@ -150,7 +103,7 @@ export function registerCommands(bot: Bot): void {
         );
       }
     } catch (err) {
-      console.error("[bot] /stock не ответил:", err);
+      console.error("[bot] /остатки не ответил:", err);
       return ctx.reply("Не получилось получить данные (сервер не ответил вовремя). Попробуйте ещё раз чуть позже.");
     }
     await logBotAudit({
@@ -158,22 +111,22 @@ export function registerCommands(bot: Bot): void {
       action: "BOT_QUERY",
       entityType: "bot_command",
       entityId: String(ctx.chat?.id ?? ""),
-      entityName: `/stock ${query ?? ""}`.trim(),
+      entityName: `/остатки ${query ?? ""}`.trim(),
     });
   });
 
-  registerBoth(bot, "sales", "продажи", async (ctx) => {
+  bot.command("продажи", async (ctx) => {
     const caller = await resolveCaller(ctx);
     if (!caller) return ctx.reply(NOT_RECOGNIZED_TEXT);
-    const query = argsAfterFirstWord(ctx);
+    const query = ctx.match?.toString().trim();
     try {
       const data = await withTimeout(
         salesByMonth({ sku: query || undefined, showMoney: caller.seesMoney }),
-        "/sales",
+        "/продажи",
       );
       await ctx.reply(`<pre>${esc(JSON.stringify(data, null, 1).slice(0, 3500))}</pre>`, HTML);
     } catch (err) {
-      console.error("[bot] /sales не ответил:", err);
+      console.error("[bot] /продажи не ответил:", err);
       return ctx.reply("Не получилось получить данные (сервер не ответил вовремя). Попробуйте ещё раз чуть позже.");
     }
     await logBotAudit({
@@ -181,18 +134,18 @@ export function registerCommands(bot: Bot): void {
       action: "BOT_QUERY",
       entityType: "bot_command",
       entityId: String(ctx.chat?.id ?? ""),
-      entityName: `/sales ${query ?? ""}`.trim(),
+      entityName: `/продажи ${query ?? ""}`.trim(),
     });
   });
 
-  registerBoth(bot, "orders", "заказы", async (ctx) => {
+  bot.command("заказы", async (ctx) => {
     const caller = await resolveCaller(ctx);
     if (!caller) return ctx.reply(NOT_RECOGNIZED_TEXT);
     try {
-      const data = await withTimeout(ordersStatus({ showMoney: caller.seesMoney }), "/orders");
+      const data = await withTimeout(ordersStatus({ showMoney: caller.seesMoney }), "/заказы");
       await ctx.reply(`<pre>${esc(JSON.stringify(data, null, 1).slice(0, 3500))}</pre>`, HTML);
     } catch (err) {
-      console.error("[bot] /orders не ответил:", err);
+      console.error("[bot] /заказы не ответил:", err);
       return ctx.reply("Не получилось получить данные (сервер не ответил вовремя). Попробуйте ещё раз чуть позже.");
     }
     await logBotAudit({
@@ -200,23 +153,23 @@ export function registerCommands(bot: Bot): void {
       action: "BOT_QUERY",
       entityType: "bot_command",
       entityId: String(ctx.chat?.id ?? ""),
-      entityName: "/orders",
+      entityName: "/заказы",
     });
   });
 
-  // /task Наталья заполнить листинг X к 28.08  (или "задача Наталья ...")
-  registerBoth(bot, "task", "задача", async (ctx) => {
+  // /задача Наталья заполнить листинг X к 28.08
+  bot.command("задача", async (ctx) => {
     const caller = await resolveCaller(ctx);
     if (!caller) return ctx.reply(NOT_RECOGNIZED_TEXT);
 
-    const text = argsAfterFirstWord(ctx);
+    const text = ctx.match?.toString().trim();
     if (!text) {
-      return ctx.reply("Формат: /task Имя текст поручения [к ДД.ММ] (или «задача Имя ...»)");
+      return ctx.reply("Формат: /задача Имя текст поручения [к ДД.ММ]");
     }
     const [nameGuess, ...rest] = text.split(" ");
     const description = rest.join(" ").trim();
     if (!description) {
-      return ctx.reply("Формат: /task Имя текст поручения [к ДД.ММ] (или «задача Имя ...»)");
+      return ctx.reply("Формат: /задача Имя текст поручения [к ДД.ММ]");
     }
 
     const people = await listActiveBotUsers();
@@ -244,7 +197,7 @@ export function registerCommands(bot: Bot): void {
     });
   });
 
-  registerBoth(bot, "tasks", "задачи", async (ctx) => {
+  bot.command("задачи", async (ctx) => {
     const caller = await resolveCaller(ctx);
     if (!caller) return ctx.reply(NOT_RECOGNIZED_TEXT);
     const tasks = await listOpenTasks(caller.id);
@@ -253,11 +206,11 @@ export function registerCommands(bot: Bot): void {
     await ctx.reply(lines.join("\n"));
   });
 
-  registerBoth(bot, "done", "выполнено", async (ctx) => {
+  bot.command("выполнено", async (ctx) => {
     const caller = await resolveCaller(ctx);
     if (!caller) return ctx.reply(NOT_RECOGNIZED_TEXT);
-    const idPrefix = argsAfterFirstWord(ctx);
-    if (!idPrefix) return ctx.reply("Формат: /done <номер поручения> (или «выполнено <номер>»)");
+    const idPrefix = ctx.match?.toString().trim();
+    if (!idPrefix) return ctx.reply("Формат: /выполнено <номер поручения>");
 
     const tasks = await listOpenTasks();
     const task = tasks.find((t) => t.id.startsWith(idPrefix));
