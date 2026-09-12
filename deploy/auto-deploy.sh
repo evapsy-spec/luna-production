@@ -27,4 +27,4 @@ if [ "$LOCAL" = "$REMOTE_HEAD" ]; then
 fi
 
 echo "новый коммит: $LOCAL -> $REMOTE_HEAD, запускаю deploy.sh"
-"$APP/deploy.sh"
+bash "$APP/deploy.sh"
