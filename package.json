@@ -14,6 +14,7 @@
     "start:lan": "next start -p 3000 -H 0.0.0.0",
     "db:fresh": "tsx scripts/fresh.ts",
     "sync:now": "tsx --env-file=.env scripts/sync-now.ts",
+    "sync:scheduled": "tsx --env-file=.env scripts/sync-scheduled.ts",
     "db:counts": "tsx --env-file=.env scripts/counts.ts",
     "ainur:inspect": "tsx --env-file=.env scripts/inspect-ainur.ts",
     "ainur:tree": "tsx --env-file=.env scripts/ainur-tree.ts",
