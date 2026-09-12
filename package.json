@@ -28,7 +28,7 @@
     "bot": "tsx --env-file=.env bot/server.ts",
     "bot:watchdog": "tsx --env-file=.env scripts/bot-watchdog.ts",
     "bot:add-user": "tsx --env-file=.env scripts/bot-add-user.ts",
-    "test": "tsx --test src/lib/brands.test.ts src/lib/transfers/logic.test.ts"
+    "test": "tsx --test src/lib/brands.test.ts src/lib/transfers/logic.test.ts src/lib/ops-scripts.test.ts"
   },
   "dependencies": {
     "@fontsource/jost": "^5.3.0",
