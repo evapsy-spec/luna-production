@@ -319,6 +319,19 @@ export async function getTransferRecommendations(
     });
     if (fotesko) {
       const reasonCode: ReasonCode = fotesko.reason;
+      // "Закончился на {dest}" для этого маршрута — про Таиланд в целом (см.
+      // комментарий у evaluateFoteskoLeg: количество считается сразу на оба
+      // острова), поэтому dest должен называть именно тот остров(а), где
+      // реально пусто, а не всегда "Phuket" — иначе для товара, который
+      // кончился на Пангане при полном Пхукете, текст был бы неверным.
+      const phuketOut = phuketQty <= 0;
+      const phanganOut = phanganQty <= 0;
+      const foteskoDest =
+        phuketOut && phanganOut
+          ? `${PHUKET} и ${PHANGAN}`
+          : phanganOut
+            ? PHANGAN
+            : PHUKET;
       rowsByRoute["fotesko-phuket"].push({
         ...common,
         from: FOTESKO,
@@ -326,7 +339,7 @@ export async function getTransferRecommendations(
         lastSaleAtDest: phuketSalesAgg.lastSaleAt,
         suggestedQty: fotesko.sendQty,
         maxQty: fotesko.foteskoAvailable,
-        reason: formatReason(reasonCode, { dest: PHUKET, source: FOTESKO }),
+        reason: formatReason(reasonCode, { dest: foteskoDest, source: FOTESKO }),
         bucket: fotesko.bucket,
         lastUnitWarning: false,
         priority: priorityScore({

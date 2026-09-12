@@ -23,6 +23,19 @@
  *  - Убрали колонки «Откуда»/«Куда» — направление и так понятно по вкладке.
  *  - Оставили только продажи за 12 месяцев (без 90 дней) — меньше цифр.
  *  - Название модели показываем полностью, без обрезки.
+ *
+ * По просьбе Евы (второй раунд, после вопроса про вкладку Fotesko → Phuket):
+ *  - С Фотески товар физически едет только на Пхукет (дальше, при необходимости,
+ *    отдельным перемещением на Панган — см. @/lib/transfer-routes) — Панган на
+ *    этой вкладке был скрыт целиком. Но количество, которое рекомендуется
+ *    привезти, изначально уже покрывает нехватку ОБОИХ островов (см.
+ *    evaluateFoteskoLeg в @/lib/transfers/logic), а таблица показывала только
+ *    остаток/продажи Пхукета — по одной этой цифре непонятно, откуда взялось
+ *    «Везём». На вкладке Fotesko → Phuket остаток и продажи Пхукета и Пангана
+ *    теперь складываются в один столбец «Таиланд» (сама логика расчёта
+ *    рекомендации не менялась, это только отображение). На вкладках
+ *    Phuket ↔ Phangan ничего не складываем — там как раз важно видеть остров
+ *    отдельно, это и есть суть перемещения.
  */
 import { useMemo, useState } from "react";
 import { BUCKET_LABELS, type Bucket } from "@/lib/transfers/logic";
@@ -74,6 +87,11 @@ export function TransferTable({ rows: allRows }: { rows: TransferTableRow[] }) {
   const showFotesko = routeFrom === FOTESKO_NAME || routeTo === FOTESKO_NAME;
   const showPhuket = routeFrom === PHUKET_NAME || routeTo === PHUKET_NAME;
   const showPhangan = routeFrom === PHANGAN_NAME || routeTo === PHANGAN_NAME;
+  // Ровно один маршрут ведёт с Фотески — Fotesko → Phuket (см.
+  // @/lib/transfer-routes: с Фотески товар уходит только на Пхукет). Только
+  // на этой вкладке остаток/продажи Пхукета и Пангана сводим в один столбец
+  // «Таиланд», потому что «Везём» здесь — это нужда обоих островов сразу.
+  const combineThailand = routeFrom === FOTESKO_NAME;
 
   const byBrand = useMemo(() => {
     const map = new Map<string, TransferTableRow[]>();
@@ -189,6 +207,7 @@ export function TransferTable({ rows: allRows }: { rows: TransferTableRow[] }) {
                     showFotesko={showFotesko}
                     showPhuket={showPhuket}
                     showPhangan={showPhangan}
+                    combineThailand={combineThailand}
                   />
                 );
               })}
@@ -218,6 +237,7 @@ function BucketGroup({
   showFotesko,
   showPhuket,
   showPhangan,
+  combineThailand,
 }: {
   bucket: Bucket;
   rows: TransferTableRow[];
@@ -228,6 +248,7 @@ function BucketGroup({
   showFotesko: boolean;
   showPhuket: boolean;
   showPhangan: boolean;
+  combineThailand: boolean;
 }) {
   const collapsedByDefault = bucket === "unconfirmedDemand";
   return (
@@ -245,10 +266,26 @@ function BucketGroup({
               <th className="px-2 py-2">Размер</th>
               <th className="px-2 py-2">Коллекция</th>
               {showFotesko ? <th className="px-2 py-2 text-right">Fotesko</th> : null}
-              {showPhuket ? <th className="px-2 py-2 text-right">Phuket</th> : null}
-              {showPhangan ? <th className="px-2 py-2 text-right">Phangan</th> : null}
-              {showPhuket ? <th className="px-2 py-2 text-right">Прод. Ph 12мес</th> : null}
-              {showPhangan ? <th className="px-2 py-2 text-right">Прод. Pn 12мес</th> : null}
+              {combineThailand ? (
+                <th className="px-2 py-2 text-right" title="Пхукет + Панган вместе">
+                  Таиланд
+                </th>
+              ) : (
+                <>
+                  {showPhuket ? <th className="px-2 py-2 text-right">Phuket</th> : null}
+                  {showPhangan ? <th className="px-2 py-2 text-right">Phangan</th> : null}
+                </>
+              )}
+              {combineThailand ? (
+                <th className="px-2 py-2 text-right" title="Продажи Пхукета + Пангана вместе">
+                  Прод. Таиланд 12мес
+                </th>
+              ) : (
+                <>
+                  {showPhuket ? <th className="px-2 py-2 text-right">Прод. Ph 12мес</th> : null}
+                  {showPhangan ? <th className="px-2 py-2 text-right">Прод. Pn 12мес</th> : null}
+                </>
+              )}
               <th className="px-2 py-2">Посл. продажа</th>
               <th className="px-2 py-2 text-right">Везём</th>
               <th className="px-2 py-2">Причина</th>
@@ -280,14 +317,29 @@ function BucketGroup({
                 <td className="px-2 py-2">{r.size ?? "—"}</td>
                 <td className="px-2 py-2 text-[var(--color-muted)]">{r.collectionName}</td>
                 {showFotesko ? <Qty value={r.stock.fotesko} negative={r.negativeStock.fotesko} /> : null}
-                {showPhuket ? <Qty value={r.stock.phuket} negative={r.negativeStock.phuket} /> : null}
-                {showPhangan ? <Qty value={r.stock.phangan} negative={r.negativeStock.phangan} /> : null}
-                {showPhuket ? (
-                  <td className="px-2 py-2 text-right tnum">{r.sales.phuket12m}</td>
-                ) : null}
-                {showPhangan ? (
-                  <td className="px-2 py-2 text-right tnum">{r.sales.phangan12m}</td>
-                ) : null}
+                {combineThailand ? (
+                  <Qty
+                    value={r.stock.phuket + r.stock.phangan}
+                    negative={r.negativeStock.phuket || r.negativeStock.phangan}
+                  />
+                ) : (
+                  <>
+                    {showPhuket ? <Qty value={r.stock.phuket} negative={r.negativeStock.phuket} /> : null}
+                    {showPhangan ? <Qty value={r.stock.phangan} negative={r.negativeStock.phangan} /> : null}
+                  </>
+                )}
+                {combineThailand ? (
+                  <td className="px-2 py-2 text-right tnum">{r.sales.phuket12m + r.sales.phangan12m}</td>
+                ) : (
+                  <>
+                    {showPhuket ? (
+                      <td className="px-2 py-2 text-right tnum">{r.sales.phuket12m}</td>
+                    ) : null}
+                    {showPhangan ? (
+                      <td className="px-2 py-2 text-right tnum">{r.sales.phangan12m}</td>
+                    ) : null}
+                  </>
+                )}
                 <td className="px-2 py-2 text-xs text-[var(--color-muted)]">
                   {r.lastSaleAtDest ?? "—"}
                 </td>
