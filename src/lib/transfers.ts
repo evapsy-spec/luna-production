@@ -1,86 +1,71 @@
 /**
- * «Перемещения между складами» — рекомендации, что перевезти и куда.
+ * «Перемещения между складами» — рекомендации, что и куда перевезти.
  *
- * Два независимых правила:
+ * Переработано под три ФИКСИРОВАННЫХ направления вместо трёх равноправных
+ * складов (см. @/lib/transfer-routes и постановку задачи в истории чата):
  *
- * 1. Пополнение со склада Fotesko. Fotesko — буферный склад, Пхукет и
- *    Панган — торговые точки. Если на точке меньше LOW_STOCK_THRESHOLD, а
- *    на Fotesko есть остаток — предлагаем довезти оттуда. Если НЕ хватает
- *    сразу обеим точкам — это одна поездка с Fotesko, а не два независимых
- *    предложения: остаток на Fotesko один, и если бы мы предлагали
- *    отправить его целиком «на Пхукет» и отдельно ещё раз целиком «на
- *    Панган», получилось бы, что рекомендуем увезти больше, чем реально
- *    есть на складе. Поэтому такие случаи — одна строка с раскладкой по
- *    точкам (кому сколько), и весь остаток Fotesko делится между ними, не
- *    задваивается. Приоритет — той точке, где сейчас меньше.
+ *   Fotesko Warehouse → Phuket   — пополнение точек с производственного/
+ *                                  буферного склада (Fotesko товар только
+ *                                  ОТДАЁТ, никогда не получает);
+ *   Phuket → Phangan             — распределение внутри Таиланда;
+ *   Phangan → Phuket             — то же в обратную сторону, реже.
  *
- * 2. Выравнивание Пхукет ↔ Панган. Смысл в том, чтобы на обеих точках было
- *    примерно одинаковое количество одной модели — это отдельная задача от
- *    пополнения с Fotesko, и её решаем, только когда у той точки, что
- *    богаче, остатка ХВАТАЕТ С ЗАПАСОМ (не ниже порога), иначе получится
- *    «раздеть» одну точку, чтобы одеть другую, а обе и так на исходе.
+ * Само решение «сколько и почему» считают чистые функции в
+ * @/lib/transfers/logic — здесь только достаём числа из базы (остатки,
+ * продажи по складам за 90/180/365 дней, дату создания варианта, бренд) и
+ * вызываем эти функции. Это единственная причина, зачем нужен именно этот
+ * файл: чтобы бизнес-правила можно было тестировать без базы данных.
  *
- * Оба правила независимые и могут сработать одновременно для одной и той
- * же позиции — тогда у человека на выбор два способа закрыть нехватку
- * (привезти с Fotesko или перекинуть с соседней точки). Каждая
- * рекомендация показывается на вкладке склада-ИСТОЧНИКА: там, где стоит
- * товар, оттуда его и физически повезут.
- *
- * Только чтение и только рекомендация — само перемещение человек делает
- * руками в Ainur/на складе, здесь это не фиксируется.
- *
- * Порядок и фильтры. По умолчанию наверху — модели, которые реально
- * продавались за последние 12 месяцев (активные), внизу — то, что не
- * продавалось вовсе (возможно, мёртвый остаток). Плюс два необязательных
- * фильтра: минимум продаж за 12 мес и минимум штук в самой рекомендации —
- * чтобы не тратить рейс ради одной футболки, которую никто не берёт.
+ * Как и раньше — только чтение и только рекомендация: само перемещение
+ * человек делает руками в Ainur/на складе, здесь это не фиксируется (Ainur
+ * — источник правды, Luna в него не пишет, см. sync.ts).
  */
 import { and, eq, gte, inArray } from "drizzle-orm";
 import { db, schema } from "@/lib/db/client";
-import { WATCHED_WAREHOUSES, WAREHOUSE_META, LOW_STOCK_THRESHOLD } from "@/lib/replenish";
+import { detectBrand, DEFAULT_BRAND } from "@/lib/brands";
+import {
+  TRANSFER_ROUTES,
+  FOTESKO,
+  PHUKET,
+  PHANGAN,
+  type RouteKey,
+} from "@/lib/transfer-routes";
+import {
+  isNewArrival,
+  priorityScore,
+  formatReason,
+  evaluateFoteskoLeg,
+  evaluateBoutiqueLeg,
+  type Bucket,
+  type PointSales,
+  type ReasonCode,
+} from "@/lib/transfers/logic";
+import { readLastSyncResult } from "@/lib/ainur/last-result";
+import type {
+  TransferTableRow,
+  NegativeStockIssue,
+  AnalysisPeriod,
+  TransferFilters as BaseTransferFilters,
+  RouteRows,
+  TransferResult,
+} from "@/lib/transfers/types";
 
-const [FOTESKO, PHUKET, PHANGAN] = WATCHED_WAREHOUSES;
+export type { Bucket };
+export { TRANSFER_ROUTES };
+export type {
+  TransferTableRow,
+  NegativeStockIssue,
+  AnalysisPeriod,
+  RouteRows,
+  TransferResult,
+} from "@/lib/transfers/types";
 
-/** Одна точка назначения внутри строки — сколько там сейчас и сколько везём именно туда */
-export interface TransferSplit {
-  to: string;
-  toQty: number;
-  suggestedQty: number;
+export interface TransferFilters extends BaseTransferFilters {
+  route?: RouteKey;
 }
 
-export interface TransferRow {
-  variantId: string;
-  sku: string;
-  productId: string;
-  productName: string;
-  size: string | null;
-  color: string | null;
-  collectionName: string;
-  from: string;
-  fromQty: number;
-  reason: "restock" | "balance";
-  soldLast12m: number;
-  /**
-   * Обычно одна точка назначения. Для пополнения с Fotesko, когда не
-   * хватает и Пхукету, и Пангану одновременно, — обе, с раскладкой
-   * остатка Fotesko между ними.
-   */
-  splits: TransferSplit[];
-  /** сумма suggestedQty по всем splits — сколько всего везти этой строкой */
-  totalQty: number;
-}
-
-export interface TransferFilters {
-  /** показывать только строки, где продано за 12 мес не меньше этого */
-  minSold12m?: number;
-  /** показывать только строки, где предлагаемое количество (totalQty) не меньше этого */
-  minSuggestedQty?: number;
-}
-
-export interface TransferResult {
-  bySource: Record<string, TransferRow[]>;
-  total: number;
-  warehouseOrder: string[];
+function daysAgoIso(n: number): string {
+  return new Date(Date.now() - n * 24 * 3600 * 1000).toISOString().slice(0, 10);
 }
 
 export async function getTransferRecommendations(
@@ -89,20 +74,27 @@ export async function getTransferRecommendations(
   const found = await db
     .select({ id: schema.warehouses.id, name: schema.warehouses.name })
     .from(schema.warehouses)
-    .where(inArray(schema.warehouses.name, [...WATCHED_WAREHOUSES]));
+    .where(inArray(schema.warehouses.name, [FOTESKO, PHUKET, PHANGAN]));
 
-  const whIds = found.map((w) => w.id);
+  const idByName = new Map(found.map((w) => [w.name, w.id]));
+  const foteskoId = idByName.get(FOTESKO);
+  const phuketId = idByName.get(PHUKET);
+  const phanganId = idByName.get(PHANGAN);
 
-  const bySource: Record<string, TransferRow[]> = {
-    [FOTESKO]: [],
-    [PHUKET]: [],
-    [PHANGAN]: [],
+  const lastSync = await readLastSyncResult();
+  const empty: TransferResult = {
+    routes: TRANSFER_ROUTES.map((route) => ({ route, rows: [] })),
+    negativeIssues: [],
+    lastUpdatedAt: lastSync?.at ?? null,
+    brands: [],
+    collections: [],
   };
 
-  if (whIds.length === 0) {
-    return { bySource, total: 0, warehouseOrder: [...WATCHED_WAREHOUSES] };
-  }
+  if (!foteskoId || !phuketId || !phanganId) return empty;
 
+  const whIds = [foteskoId, phuketId, phanganId];
+
+  // ---------- остатки + карточка товара ----------
   const stock = await db
     .select({
       variantId: schema.variantStock.variantId,
@@ -111,8 +103,10 @@ export async function getTransferRecommendations(
       sku: schema.productVariants.sku,
       size: schema.productVariants.size,
       color: schema.productVariants.color,
+      createdAt: schema.productVariants.createdAt,
       productId: schema.products.id,
       productName: schema.products.name,
+      collectionId: schema.collections.id,
       collectionName: schema.collections.name,
     })
     .from(schema.variantStock)
@@ -120,63 +114,37 @@ export async function getTransferRecommendations(
       schema.productVariants,
       eq(schema.variantStock.variantId, schema.productVariants.id),
     )
-    .innerJoin(
-      schema.products,
-      eq(schema.productVariants.productId, schema.products.id),
-    )
-    .innerJoin(
-      schema.collections,
-      eq(schema.products.collectionId, schema.collections.id),
-    )
+    .innerJoin(schema.products, eq(schema.productVariants.productId, schema.products.id))
+    .innerJoin(schema.collections, eq(schema.products.collectionId, schema.collections.id))
     .where(
       and(
         inArray(schema.variantStock.warehouseId, whIds),
         eq(schema.productVariants.isArchived, false),
         eq(schema.products.isArchived, false),
+        eq(schema.collections.isArchived, false),
       ),
     );
 
+  // «не повторять» — та же исключающая логика, что и в «Пора заказывать»:
+  // человек уже решил, что этой моделью не занимаемся.
   const excludedRows = await db
     .select({ variantId: schema.replenishPlan.variantId })
     .from(schema.replenishPlan)
     .where(eq(schema.replenishPlan.excluded, true));
   const excluded = new Set(excludedRows.map((r) => r.variantId));
 
-  const variantIds = [...new Set(stock.map((s) => s.variantId))];
-  const since = new Date(Date.now() - 365 * 24 * 3600 * 1000).toISOString().slice(0, 10);
-  const salesRows = variantIds.length
-    ? await db
-        .select({
-          variantId: schema.variantSalesDaily.variantId,
-          units: schema.variantSalesDaily.units,
-        })
-        .from(schema.variantSalesDaily)
-        .where(
-          and(
-            inArray(schema.variantSalesDaily.variantId, variantIds),
-            gte(schema.variantSalesDaily.day, since),
-          ),
-        )
-    : [];
-  const soldLast12mByVariant = new Map<string, number>();
-  for (const r of salesRows) {
-    soldLast12mByVariant.set(
-      r.variantId,
-      (soldLast12mByVariant.get(r.variantId) ?? 0) + Number(r.units),
-    );
-  }
-
-  interface Bucket {
+  interface Bucket0 {
     sku: string;
     productId: string;
     productName: string;
     size: string | null;
     color: string | null;
+    collectionId: string;
     collectionName: string;
-    qty: Record<string, number>;
+    createdAt: string;
+    qty: Record<string, number>; // warehouseId -> raw quantity
   }
-  const byVariant = new Map<string, Bucket>();
-
+  const byVariant = new Map<string, Bucket0>();
   for (const s of stock) {
     if (excluded.has(s.variantId)) continue;
     let b = byVariant.get(s.variantId);
@@ -187,119 +155,326 @@ export async function getTransferRecommendations(
         productName: s.productName,
         size: s.size,
         color: s.color,
+        collectionId: s.collectionId,
         collectionName: s.collectionName,
-        qty: { [FOTESKO]: 0, [PHUKET]: 0, [PHANGAN]: 0 },
+        createdAt: s.createdAt,
+        qty: {},
       };
       byVariant.set(s.variantId, b);
     }
-    const whName = found.find((w) => w.id === s.warehouseId)?.name;
-    if (whName) b.qty[whName] = Number(s.quantity);
+    b.qty[s.warehouseId] = Number(s.quantity);
   }
 
-  const thr = LOW_STOCK_THRESHOLD;
+  const variantIds = [...byVariant.keys()];
 
-  function pushRow(
-    variantId: string,
-    b: Bucket,
-    from: string,
-    fromQty: number,
-    splits: TransferSplit[],
-    reason: "restock" | "balance",
-  ) {
-    const totalQty = splits.reduce((sum, s) => sum + s.suggestedQty, 0);
-    if (totalQty <= 0) return;
-    const soldLast12m = soldLast12mByVariant.get(variantId) ?? 0;
-    if (filters.minSold12m !== undefined && soldLast12m < filters.minSold12m) return;
-    if (filters.minSuggestedQty !== undefined && totalQty < filters.minSuggestedQty) return;
-    bySource[from].push({
+  // ---------- продажи за 365 дней, по варианту+складу+дню ----------
+  const since365 = daysAgoIso(365);
+  const salesRows = variantIds.length
+    ? await db
+        .select({
+          variantId: schema.variantSalesDaily.variantId,
+          warehouseId: schema.variantSalesDaily.warehouseId,
+          day: schema.variantSalesDaily.day,
+          units: schema.variantSalesDaily.units,
+        })
+        .from(schema.variantSalesDaily)
+        .where(
+          and(
+            inArray(schema.variantSalesDaily.variantId, variantIds),
+            gte(schema.variantSalesDaily.day, since365),
+          ),
+        )
+    : [];
+
+  const since90 = daysAgoIso(90);
+  const since180 = daysAgoIso(180);
+
+  interface SalesAgg {
+    sold90: number;
+    sold180: number;
+    sold365: number;
+    lastSaleAt: string | null;
+  }
+  const salesByVariantWarehouse = new Map<string, SalesAgg>();
+  for (const r of salesRows) {
+    if (!r.warehouseId) continue; // продажи без привязки к складу здесь не участвуют
+    const key = `${r.variantId}|${r.warehouseId}`;
+    let agg = salesByVariantWarehouse.get(key);
+    if (!agg) {
+      agg = { sold90: 0, sold180: 0, sold365: 0, lastSaleAt: null };
+      salesByVariantWarehouse.set(key, agg);
+    }
+    const units = Number(r.units);
+    if (units > 0) {
+      agg.sold365 += units;
+      if (r.day >= since180) agg.sold180 += units;
+      if (r.day >= since90) agg.sold90 += units;
+      if (!agg.lastSaleAt || r.day > agg.lastSaleAt) agg.lastSaleAt = r.day;
+    }
+  }
+
+  const salesFor = (variantId: string, warehouseId: string): SalesAgg =>
+    salesByVariantWarehouse.get(`${variantId}|${warehouseId}`) ?? {
+      sold90: 0,
+      sold180: 0,
+      sold365: 0,
+      lastSaleAt: null,
+    };
+
+  function periodValue(agg: SalesAgg, p: AnalysisPeriod): number {
+    if (p === "90d") return agg.sold90;
+    if (p === "6m") return agg.sold180;
+    return agg.sold365;
+  }
+  const period = filters.period ?? "12m";
+
+  // ---------- считаем по каждому варианту ----------
+  const negativeIssues: NegativeStockIssue[] = [];
+  const seenNegative = new Set<string>();
+  const pushNegative = (variantId: string, b: Bucket0, warehouseId: string, whName: string) => {
+    const key = `${variantId}|${warehouseId}`;
+    if (seenNegative.has(key)) return;
+    seenNegative.add(key);
+    negativeIssues.push({
+      variantId,
+      sku: b.sku,
+      productName: b.productName,
+      warehouse: whName,
+      quantity: b.qty[warehouseId] ?? 0,
+    });
+  };
+
+  const rowsByRoute: Record<RouteKey, TransferTableRow[]> = {
+    "fotesko-phuket": [],
+    "phuket-phangan": [],
+    "phangan-phuket": [],
+  };
+
+  const brandsSeen = new Set<string>();
+
+  for (const [variantId, b] of byVariant) {
+    const foteskoQty = b.qty[foteskoId] ?? 0;
+    const phuketQty = b.qty[phuketId] ?? 0;
+    const phanganQty = b.qty[phanganId] ?? 0;
+
+    if (foteskoQty < 0) pushNegative(variantId, b, foteskoId, FOTESKO);
+    if (phuketQty < 0) pushNegative(variantId, b, phuketId, PHUKET);
+    if (phanganQty < 0) pushNegative(variantId, b, phanganId, PHANGAN);
+
+    const phuketSalesAgg = salesFor(variantId, phuketId);
+    const phanganSalesAgg = salesFor(variantId, phanganId);
+    const hasAnySalesEver = phuketSalesAgg.sold365 > 0 || phanganSalesAgg.sold365 > 0;
+    const isNew = isNewArrival({ createdAt: b.createdAt, hasAnySalesEver });
+
+    const brand = detectBrand(b.productName, b.collectionName);
+    brandsSeen.add(brand);
+
+    const phuketSales: PointSales = {
+      sold90d: phuketSalesAgg.sold90,
+      sold12m: phuketSalesAgg.sold365,
+      lastSaleAt: phuketSalesAgg.lastSaleAt,
+    };
+    const phanganSales: PointSales = {
+      sold90d: phanganSalesAgg.sold90,
+      sold12m: phanganSalesAgg.sold365,
+      lastSaleAt: phanganSalesAgg.lastSaleAt,
+    };
+
+    const common = {
       variantId,
       sku: b.sku,
       productId: b.productId,
       productName: b.productName,
       size: b.size,
       color: b.color,
+      collectionId: b.collectionId,
       collectionName: b.collectionName,
-      from,
-      fromQty,
-      reason,
-      soldLast12m,
-      splits,
-      totalQty,
+      brand,
+      isNew,
+      stock: { fotesko: foteskoQty, phuket: phuketQty, phangan: phanganQty },
+      negativeStock: {
+        fotesko: foteskoQty < 0,
+        phuket: phuketQty < 0,
+        phangan: phanganQty < 0,
+      },
+      hasNegativeStock: foteskoQty < 0 || phuketQty < 0 || phanganQty < 0,
+      sales: {
+        phuket90: phuketSalesAgg.sold90,
+        phangan90: phanganSalesAgg.sold90,
+        phuket12m: phuketSalesAgg.sold365,
+        phangan12m: phanganSalesAgg.sold365,
+        phuketPeriod: periodValue(phuketSalesAgg, period),
+        phanganPeriod: periodValue(phanganSalesAgg, period),
+      },
+    };
+
+    // --- 1) Fotesko → Phuket ---
+    const fotesko = evaluateFoteskoLeg({
+      foteskoRawQty: foteskoQty,
+      phuketRawQty: phuketQty,
+      phanganRawQty: phanganQty,
+      phuketSales,
+      phanganSales,
+      isNew,
     });
+    if (fotesko) {
+      const reasonCode: ReasonCode = fotesko.reason;
+      rowsByRoute["fotesko-phuket"].push({
+        ...common,
+        from: FOTESKO,
+        to: PHUKET,
+        lastSaleAtDest: phuketSalesAgg.lastSaleAt,
+        suggestedQty: fotesko.sendQty,
+        maxQty: fotesko.foteskoAvailable,
+        reason: formatReason(reasonCode, { dest: PHUKET, source: FOTESKO }),
+        bucket: fotesko.bucket,
+        lastUnitWarning: false,
+        priority: priorityScore({
+          destAvailable: phuketQty < 0 ? 0 : phuketQty,
+          destSoldOutRecently: phuketQty <= 0 && phuketSalesAgg.sold90 > 0,
+          sold90d: phuketSalesAgg.sold90 + phanganSalesAgg.sold90,
+          sold12m: phuketSalesAgg.sold365 + phanganSalesAgg.sold365,
+          isNew,
+        }),
+      });
+    }
+
+    // --- 2) Phuket → Phangan ---
+    const toPhangan = evaluateBoutiqueLeg({
+      sourceRawQty: phuketQty,
+      destRawQty: phanganQty,
+      sourceSales: phuketSales,
+      destSales: phanganSales,
+      isNew,
+    });
+    if (toPhangan && toPhangan.sendQty > 0) {
+      rowsByRoute["phuket-phangan"].push({
+        ...common,
+        from: PHUKET,
+        to: PHANGAN,
+        lastSaleAtDest: phanganSalesAgg.lastSaleAt,
+        suggestedQty: toPhangan.sendQty,
+        maxQty: toPhangan.sourceAvailable,
+        reason: formatReason(toPhangan.reason, { dest: PHANGAN, source: PHUKET }),
+        bucket: toPhangan.bucket,
+        lastUnitWarning: toPhangan.lastUnitWarning,
+        priority: priorityScore({
+          destAvailable: toPhangan.destAvailable,
+          destSoldOutRecently: toPhangan.destAvailable === 0 && phanganSalesAgg.sold90 > 0,
+          sold90d: phanganSalesAgg.sold90,
+          sold12m: phanganSalesAgg.sold365,
+          isNew,
+        }),
+      });
+    } else if (toPhangan && toPhangan.bucket === "needsPurchase") {
+      rowsByRoute["phuket-phangan"].push({
+        ...common,
+        from: PHUKET,
+        to: PHANGAN,
+        lastSaleAtDest: phanganSalesAgg.lastSaleAt,
+        suggestedQty: 0,
+        maxQty: toPhangan.sourceAvailable,
+        reason: formatReason("NEEDS_PURCHASE"),
+        bucket: "needsPurchase",
+        lastUnitWarning: false,
+        priority: 0,
+      });
+    }
+
+    // --- 3) Phangan → Phuket ---
+    const toPhuket = evaluateBoutiqueLeg({
+      sourceRawQty: phanganQty,
+      destRawQty: phuketQty,
+      sourceSales: phanganSales,
+      destSales: phuketSales,
+      isNew,
+    });
+    if (toPhuket && toPhuket.sendQty > 0) {
+      rowsByRoute["phangan-phuket"].push({
+        ...common,
+        from: PHANGAN,
+        to: PHUKET,
+        lastSaleAtDest: phuketSalesAgg.lastSaleAt,
+        suggestedQty: toPhuket.sendQty,
+        maxQty: toPhuket.sourceAvailable,
+        reason: formatReason(toPhuket.reason, { dest: PHUKET, source: PHANGAN }),
+        bucket: toPhuket.bucket,
+        lastUnitWarning: toPhuket.lastUnitWarning,
+        priority: priorityScore({
+          destAvailable: toPhuket.destAvailable,
+          destSoldOutRecently: toPhuket.destAvailable === 0 && phuketSalesAgg.sold90 > 0,
+          sold90d: phuketSalesAgg.sold90,
+          sold12m: phuketSalesAgg.sold365,
+          isNew,
+        }),
+      });
+    } else if (toPhuket && toPhuket.bucket === "needsPurchase") {
+      rowsByRoute["phangan-phuket"].push({
+        ...common,
+        from: PHANGAN,
+        to: PHUKET,
+        lastSaleAtDest: phuketSalesAgg.lastSaleAt,
+        suggestedQty: 0,
+        maxQty: toPhuket.sourceAvailable,
+        reason: formatReason("NEEDS_PURCHASE"),
+        bucket: "needsPurchase",
+        lastUnitWarning: false,
+        priority: 0,
+      });
+    }
   }
 
-  for (const [variantId, b] of byVariant) {
-    const F = b.qty[FOTESKO];
-    const Ph = b.qty[PHUKET];
-    const Pn = b.qty[PHANGAN];
-
-    // --- 1) Пополнение с Fotesko: одна строка на обе точки сразу ---
-    const needPh = Ph < thr ? thr - Ph : 0;
-    const needPn = Pn < thr ? thr - Pn : 0;
-    if (F > 0 && (needPh > 0 || needPn > 0)) {
-      // Кому не хватает больше — того обслуживаем первым, если остатка
-      // Fotesko не хватает на обоих сразу.
-      const order: Array<[string, number, number]> =
-        Ph <= Pn
-          ? [
-              [PHUKET, needPh, Ph],
-              [PHANGAN, needPn, Pn],
-            ]
-          : [
-              [PHANGAN, needPn, Pn],
-              [PHUKET, needPh, Ph],
-            ];
-      let remaining = F;
-      const splits: TransferSplit[] = [];
-      for (const [name, need, curQty] of order) {
-        if (need <= 0 || remaining <= 0) continue;
-        const send = Math.min(need, remaining);
-        if (send > 0) {
-          splits.push({ to: name, toQty: curQty, suggestedQty: send });
-          remaining -= send;
-        }
+  // ---------- фильтры (общие для всех вкладок) ----------
+  function applyFilters(rows: TransferTableRow[]): TransferTableRow[] {
+    let out = rows;
+    if (filters.q) {
+      const needle = filters.q.trim().toLowerCase();
+      if (needle) {
+        out = out.filter(
+          (r) =>
+            r.sku.toLowerCase().includes(needle) ||
+            r.productName.toLowerCase().includes(needle),
+        );
       }
-      pushRow(variantId, b, FOTESKO, F, splits, "restock");
     }
-
-    // --- 2) Выравнивание Пхукет ↔ Панган (не зависит от Fotesko) ---
-    if (Ph < thr && Pn >= thr && Pn > Ph) {
-      pushRow(
-        variantId,
-        b,
-        PHANGAN,
-        Pn,
-        [{ to: PHUKET, toQty: Ph, suggestedQty: Math.floor((Pn - Ph) / 2) }],
-        "balance",
-      );
-    }
-    if (Pn < thr && Ph >= thr && Ph > Pn) {
-      pushRow(
-        variantId,
-        b,
-        PHUKET,
-        Ph,
-        [{ to: PHANGAN, toQty: Pn, suggestedQty: Math.floor((Ph - Pn) / 2) }],
-        "balance",
-      );
-    }
+    if (filters.brand) out = out.filter((r) => r.brand === filters.brand);
+    if (filters.collectionId) out = out.filter((r) => r.collectionId === filters.collectionId);
+    if (filters.onlySoldOut) out = out.filter((r) => r.bucket === "moveNow");
+    if (filters.onlyLowStock) out = out.filter((r) => r.bucket === "lowStock");
+    if (filters.onlyNew) out = out.filter((r) => r.isNew);
+    if (filters.hideNoSales) out = out.filter((r) => r.bucket !== "unconfirmedDemand");
+    return out;
   }
 
-  let total = 0;
-  for (const wh of WATCHED_WAREHOUSES) {
-    // Наверху — модели с реальным движением за 12 мес (больше продано —
-    // выше), внизу — то, что не продавалось вовсе. Внутри одной активности
-    // сортируем как раньше: сначала где «там» пусто (по самой нуждающейся
-    // из точек в строке).
-    bySource[wh].sort((a, c) => {
-      const minToA = Math.min(...a.splits.map((s) => s.toQty));
-      const minToC = Math.min(...c.splits.map((s) => s.toQty));
-      return c.soldLast12m - a.soldLast12m || minToA - minToC || a.sku.localeCompare(c.sku);
+  const collMap = new Map<string, string>();
+  for (const b of byVariant.values()) collMap.set(b.collectionId, b.collectionName);
+
+  const routes: RouteRows[] = TRANSFER_ROUTES.map((route) => {
+    const rows = applyFilters(rowsByRoute[route.key]).sort((a, c) => {
+      if (a.bucket !== c.bucket) {
+        const order: Bucket[] = [
+          "moveNow",
+          "lowStock",
+          "newArrivals",
+          "needsPurchase",
+          "unconfirmedDemand",
+        ];
+        return order.indexOf(a.bucket) - order.indexOf(c.bucket);
+      }
+      return c.priority - a.priority || a.sku.localeCompare(c.sku);
     });
-    total += bySource[wh].length;
-  }
+    return { route, rows };
+  });
 
-  return { bySource, total, warehouseOrder: [...WATCHED_WAREHOUSES] };
+  return {
+    routes,
+    negativeIssues,
+    lastUpdatedAt: lastSync?.at ?? null,
+    brands: [...brandsSeen].sort((a, b) =>
+      a === DEFAULT_BRAND ? -1 : b === DEFAULT_BRAND ? 1 : a.localeCompare(b),
+    ),
+    collections: [...collMap.entries()]
+      .map(([id, name]) => ({ id, name }))
+      .sort((a, b) => a.name.localeCompare(b.name)),
+  };
 }
-
-export { WAREHOUSE_META, LOW_STOCK_THRESHOLD };
