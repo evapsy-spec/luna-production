@@ -12,6 +12,7 @@
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { db, schema } from "@/lib/db/client";
 import { ainurClient } from "./token";
+import { PHUKET, PHANGAN } from "@/lib/transfer-routes";
 import {
   asInt,
   asNumber,
@@ -142,6 +143,9 @@ export async function syncProducts(
   try {
     // 0. Склады должны существовать до раскладки остатков
     const warehouseByAinurId = await loadWarehouseMap();
+    // Чужие бренды пишутся только на Phuket/Phangan — см. комментарий у
+    // loadOtherBrandAllowedWarehouseIds.
+    const otherBrandAllowedWarehouseIds = await loadOtherBrandAllowedWarehouseIds();
 
     // 1. Коллекции (группы Ainur)
     //
@@ -231,6 +235,11 @@ export async function syncProducts(
 
     let skippedOtherBrands = 0;
     let skippedExcluded = 0;
+    // Чужие бренды (см. схему other_brand_*) — кэш sku->variantId на весь
+    // прогон, чтобы не долбить базу SELECT-ом на каждый повтор.
+    const otherBrandVariantCache = new Map<string, string>();
+    let otherBrandRead = 0;
+    let otherBrandWritten = 0;
 
     /**
      * Список SKU, которые мы сознательно НЕ ведём, даже если в Ainur они
@@ -303,9 +312,32 @@ export async function syncProducts(
 
       const categoryId = asString(item.category_id);
 
-      // Товар чужого бренда — пропускаем молча, это не ошибка
+      // Товар не из поддерева Eva Moon: либо чужой бренд — сохраняем в
+      // отдельные other_brand_* таблицы (только для «Перемещений», см.
+      // схему), либо категория совсем потерялась — тогда молча пропускаем,
+      // как и раньше.
       if (!categoryId || !collectionByAinurId.has(categoryId)) {
         skippedOtherBrands++;
+        if (categoryId) {
+          const resolved = resolveBrandAndCollection(categoryId, catById);
+          if (resolved) {
+            otherBrandRead++;
+            const created = await upsertOtherBrandVariant({
+              cache: otherBrandVariantCache,
+              brand: resolved.brandName,
+              sku,
+              modelName,
+              color,
+              size,
+              ainurId: asString(item.id),
+              stock: item.stock,
+              warehouseByAinurId,
+              allowedWarehouseIds: otherBrandAllowedWarehouseIds,
+              details,
+            });
+            if (created) otherBrandWritten++;
+          }
+        }
         continue;
       }
       const collectionId = collectionByAinurId.get(categoryId)!;
@@ -421,7 +453,8 @@ export async function syncProducts(
 
     if (skippedOtherBrands > 0) {
       details.push(
-        `пропущено товаров других брендов: ${skippedOtherBrands} из ${products.length}`,
+        `товаров других брендов: ${skippedOtherBrands} из ${products.length}, ` +
+          `сохранено в other_brand_variants: ${otherBrandRead} прочитано / ${otherBrandWritten} новых`,
       );
     }
 
@@ -488,11 +521,14 @@ export async function syncSales(
     });
 
     const variantBySku = await loadVariantSkuMap();
+    const otherBrandVariantBySku = await loadOtherBrandVariantSkuMap();
     const warehouseByAinurId = await loadWarehouseMap();
 
     // агрегируем в память: ключ = вариант|склад|день
     type Bucket = { units: number; revenue: number; cost: number };
     const buckets = new Map<string, Bucket>();
+    // отдельно чужие бренды — им нужны только штуки (see other_brand_sales_daily)
+    const otherBrandBuckets = new Map<string, number>();
     let lineCount = 0;
     let unmatched = 0;
 
@@ -508,7 +544,14 @@ export async function syncSales(
         const sku = asString(line.code) ?? asString(line.sku);
         const variantId = sku ? variantBySku.get(sku) : undefined;
         if (!variantId) {
-          unmatched++;
+          const otherBrandVariantId = sku ? otherBrandVariantBySku.get(sku) : undefined;
+          if (otherBrandVariantId) {
+            const otherKey = `${otherBrandVariantId}|${warehouseId ?? ""}|${day}`;
+            const units = -asInt(line.quantity);
+            otherBrandBuckets.set(otherKey, (otherBrandBuckets.get(otherKey) ?? 0) + units);
+          } else {
+            unmatched++;
+          }
           continue;
         }
 
@@ -539,9 +582,10 @@ export async function syncSales(
 
     if (unmatched > 0) {
       details.push(
-        `${unmatched} строк продаж не сопоставлено: часть — товары других ` +
-          `брендов (их мы не учитываем), часть — строки, в которых Ainur не ` +
-          `указал SKU (есть только название). Такие продажи в скорость не входят.`,
+        `${unmatched} строк продаж не сопоставлено: SKU не найден ни в ` +
+          `Eva Moon, ни в other_brand_variants — либо строка вообще без SKU ` +
+          `(есть только название), либо это бренд, которого сейчас нет в ` +
+          `каталоге (архивный товар). Такие продажи в скорость не входят.`,
       );
     }
 
@@ -588,13 +632,46 @@ export async function syncSales(
       written++;
     }
 
+    let otherBrandWritten = 0;
+    for (const [key, units] of otherBrandBuckets) {
+      const [variantId, warehouseRaw, day] = key.split("|");
+      const warehouseId = warehouseRaw === "" ? null : warehouseRaw;
+
+      const existing = await db
+        .select()
+        .from(schema.otherBrandSalesDaily)
+        .where(
+          and(
+            eq(schema.otherBrandSalesDaily.variantId, variantId),
+            eq(schema.otherBrandSalesDaily.day, day),
+            warehouseId === null
+              ? sql`${schema.otherBrandSalesDaily.warehouseId} IS NULL`
+              : eq(schema.otherBrandSalesDaily.warehouseId, warehouseId),
+          ),
+        )
+        .limit(1);
+
+      if (existing.length) {
+        await db
+          .update(schema.otherBrandSalesDaily)
+          .set({ units })
+          .where(eq(schema.otherBrandSalesDaily.id, existing[0].id));
+      } else {
+        await db.insert(schema.otherBrandSalesDaily).values({ variantId, warehouseId, day, units });
+      }
+      otherBrandWritten++;
+    }
+    if (otherBrandWritten > 0) {
+      details.push(`продажи других брендов: ${otherBrandWritten} строк (день×склад×товар)`);
+    }
+
     details.push(`документов: ${docs.length}, строк: ${lineCount}`);
-    await finishRun(run, "OK", docs.length, written);
+    await finishRun(run, "OK", docs.length, written + otherBrandWritten);
     return {
       kind: "sales",
       ok: true,
       itemsRead: docs.length,
-      itemsWritten: written,
+      itemsWritten: written + otherBrandWritten,
       durationMs: Date.now() - started,
       details,
     };
@@ -785,6 +862,51 @@ export async function loadExcludedSkus(): Promise<Set<string>> {
  * «Eva Moon»: у EVA MOON, в отличие от остальных брендов, названия-префикса
  * у вложенных коллекций нет, поэтому опираться можно только на корень.
  */
+/**
+ * Определяет бренд и «коллекцию» для ЛЮБОЙ категории по структуре папок в
+ * Айноре — не по списку названий (тот был захардкожен всего на пару
+ * примеров, никогда не совпадавших с реальным каталогом, см. историю чата
+ * 2026-09-12). Идём вверх по parent_id до категории без родителя — это и
+ * есть корень бренда, его name — имя бренда. «Коллекция» — прямой ребёнок
+ * этого корня на пути к categoryId; у брендов без вложенности (все, кроме
+ * Eva Moon) это сам корень.
+ */
+export function resolveBrandAndCollection(
+  categoryId: string,
+  catById: Map<string, AinurCategory>,
+): {
+  brandRootId: string;
+  brandName: string;
+  collectionCategoryId: string;
+  collectionName: string;
+} | null {
+  let current = catById.get(categoryId);
+  if (!current) return null;
+  const chain: AinurCategory[] = [];
+  const seen = new Set<string>();
+  while (current) {
+    if (seen.has(current.id)) return null; // защита от циклов в данных
+    seen.add(current.id);
+    chain.push(current);
+    const parentId = asString((current as { parent_id?: unknown }).parent_id);
+    if (!parentId) break;
+    const parent = catById.get(parentId);
+    if (!parent) break; // родитель не найден в списке категорий — считаем текущую корнем
+    current = parent;
+  }
+  const root = chain[chain.length - 1];
+  const collectionCat = chain.length >= 2 ? chain[chain.length - 2] : root;
+  const brandName = asString(root.name);
+  const collectionName = asString(collectionCat.name);
+  if (!brandName || !collectionName) return null;
+  return {
+    brandRootId: root.id,
+    brandName,
+    collectionCategoryId: collectionCat.id,
+    collectionName,
+  };
+}
+
 async function resolveBrandRoot(
   categories: AinurCategory[],
 ): Promise<string | null> {
@@ -824,6 +946,22 @@ async function loadWarehouseMap(): Promise<Map<string, string>> {
   return map;
 }
 
+/**
+ * Товары чужих брендов (other_brand_*) нужны только для «Перемещений»
+ * Пхукет↔Панган — на склад Fotesko (производство/поставки Eva Moon) и на
+ * любой другой склад чужой бренд попадать не должен ни при каких условиях.
+ * Поэтому remoteStock чужого бренда пишем только в те id складов, что
+ * реально называются Phuket/Phangan — а не во все, что нашлись в
+ * warehouseByAinurId.
+ */
+async function loadOtherBrandAllowedWarehouseIds(): Promise<Set<string>> {
+  const rows = await db
+    .select({ id: schema.warehouses.id, name: schema.warehouses.name })
+    .from(schema.warehouses)
+    .where(inArray(schema.warehouses.name, [PHUKET, PHANGAN]));
+  return new Set(rows.map((r) => r.id));
+}
+
 async function loadVariantSkuMap(): Promise<Map<string, string>> {
   const rows = await db
     .select({
@@ -831,6 +969,16 @@ async function loadVariantSkuMap(): Promise<Map<string, string>> {
       sku: schema.productVariants.sku,
     })
     .from(schema.productVariants);
+  return new Map(rows.map((r) => [r.sku, r.id]));
+}
+
+async function loadOtherBrandVariantSkuMap(): Promise<Map<string, string>> {
+  const rows = await db
+    .select({
+      id: schema.otherBrandVariants.id,
+      sku: schema.otherBrandVariants.sku,
+    })
+    .from(schema.otherBrandVariants);
   return new Map(rows.map((r) => [r.sku, r.id]));
 }
 
@@ -859,6 +1007,115 @@ async function upsertVariantStock(
   } else {
     await db
       .insert(schema.variantStock)
+      .values({ variantId, warehouseId, quantity, syncedAt });
+  }
+}
+
+/**
+ * Создаёт/обновляет вариант чужого бренда и его остатки по складам —
+ * отдельные таблицы other_brand_* (см. схему и комментарий там же).
+ * Кэш variantId по sku передаётся снаружи, на весь прогон синхронизации —
+ * без него на каждый товар был бы лишний SELECT.
+ *
+ * Возвращает true, если вариант был реально создан (для счётчика "записано").
+ */
+export async function upsertOtherBrandVariant(params: {
+  cache: Map<string, string>;
+  brand: string;
+  sku: string;
+  modelName: string;
+  color: string | null;
+  size: string | null;
+  ainurId: string | null;
+  stock: Record<string, unknown> | undefined;
+  warehouseByAinurId: Map<string, string>;
+  /** Только эти id складов — остальные (в т.ч. Fotesko) молча игнорируем. */
+  allowedWarehouseIds: Set<string>;
+  details: string[];
+}): Promise<boolean> {
+  const {
+    cache,
+    brand,
+    sku,
+    modelName,
+    color,
+    size,
+    ainurId,
+    stock,
+    warehouseByAinurId,
+    allowedWarehouseIds,
+  } = params;
+
+  let variantId = cache.get(sku);
+  let created = false;
+  if (!variantId) {
+    const existing = await db
+      .select()
+      .from(schema.otherBrandVariants)
+      .where(eq(schema.otherBrandVariants.sku, sku))
+      .limit(1);
+
+    if (existing.length) {
+      variantId = existing[0].id;
+      await db
+        .update(schema.otherBrandVariants)
+        .set({ brand, modelName, color, size, ainurId, isArchived: false })
+        .where(eq(schema.otherBrandVariants.id, variantId));
+    } else {
+      const [row] = await db
+        .insert(schema.otherBrandVariants)
+        .values({ brand, modelName, sku, color, size, ainurId })
+        .returning();
+      variantId = row.id;
+      created = true;
+    }
+    cache.set(sku, variantId);
+  }
+
+  if (stock) {
+    for (const [ainurStoreId, qty] of Object.entries(stock)) {
+      const warehouseId = warehouseByAinurId.get(ainurStoreId);
+      // В отличие от товаров Eva Moon, здесь склад на лету не создаём: если
+      // его ещё нет в warehouseByAinurId, значит он уже завёлся бы через
+      // обычный товар Eva Moon (Phuket/Phangan точно есть) — а на редкий
+      // склад, где нет вообще ничего своего, чужой бренд можно пропустить.
+      if (!warehouseId) continue;
+      // Чужие бренды видны только на «Перемещениях» Пхукет↔Панган — остаток
+      // на Fotesko (или любом другом складе) для них не пишем ни при каких
+      // условиях, даже если Айнур прислал по нему цифру.
+      if (!allowedWarehouseIds.has(warehouseId)) continue;
+      await upsertOtherBrandStock(variantId, warehouseId, Math.round(Number(qty) || 0));
+    }
+  }
+
+  return created;
+}
+
+async function upsertOtherBrandStock(
+  variantId: string,
+  warehouseId: string,
+  quantity: number,
+): Promise<void> {
+  const existing = await db
+    .select()
+    .from(schema.otherBrandStock)
+    .where(
+      and(
+        eq(schema.otherBrandStock.variantId, variantId),
+        eq(schema.otherBrandStock.warehouseId, warehouseId),
+      ),
+    )
+    .limit(1);
+
+  const syncedAt = new Date().toISOString();
+  if (existing.length) {
+    await db
+      .update(schema.otherBrandStock)
+      .set({ quantity, syncedAt })
+      .where(eq(schema.otherBrandStock.id, existing[0].id));
+  } else {
+    await db
+      .insert(schema.otherBrandStock)
       .values({ variantId, warehouseId, quantity, syncedAt });
   }
 }

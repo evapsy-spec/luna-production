@@ -484,6 +484,87 @@ export const stockMovements = sqliteTable(
 );
 
 // ============================================================
+// ЧУЖИЕ БРЕНДЫ (перепродажа на Пхукете/Пангане) — ТОЛЬКО для «Перемещений»
+// ============================================================
+//
+// Специально ОТДЕЛЬНЫЕ таблицы, не строки в products/productVariants.
+// products/productVariants/variantStock/variantSalesDaily используются
+// ~20 страницами приложения (карточки товара, заказы, аналитика, экспорт
+// и т.д.) — все они по сей день неявно читали только каталог Eva Moon,
+// потому что других брендов в базе просто не было. Свалить сюда же чужие
+// бренды означало бы обязательно проаудировать и поправить фильтром
+// каждую из тех страниц — а «Перемещения» это единственное место, где
+// Ева попросила их показывать (2026-09-12). Отдельные таблицы дают тот
+// же результат для «Перемещений» без единого шанса, что чужой бренд
+// случайно всплывёт там, где его не звали.
+//
+// Бренд узнаём не по списку названий (тот был захардкожен всего на два
+// примера и не совпадал с реальным каталогом), а по структуре папок в
+// Айноре: у каждого стороннего бренда — своя корневая папка верхнего
+// уровня, без вложенных коллекций (см. resolveBrandAndCollection в
+// @/lib/ainur/sync). Название папки и есть название бренда.
+
+/** Вариант товара стороннего бренда — минимум полей, нужный только для
+ * рекомендаций по перемещению (SKU, модель, размер/цвет, бренд). */
+export const otherBrandVariants = sqliteTable(
+  "other_brand_variants",
+  {
+    id: id(),
+    /** название корневой папки бренда в Айноре — как есть, без обработки */
+    brand: text("brand").notNull(),
+    modelName: text("model_name").notNull(),
+    /** = code в Ainur */
+    sku: text("sku").notNull().unique(),
+    color: text("color"),
+    size: text("size"),
+    ainurId: text("ainur_id").unique(),
+    isArchived: integer("is_archived", { mode: "boolean" })
+      .notNull()
+      .default(false),
+    createdAt: now(),
+  },
+  (t) => [index("other_brand_variant_brand_idx").on(t.brand)],
+);
+
+export const otherBrandStock = sqliteTable(
+  "other_brand_stock",
+  {
+    id: id(),
+    variantId: text("variant_id")
+      .notNull()
+      .references(() => otherBrandVariants.id, { onDelete: "cascade" }),
+    warehouseId: text("warehouse_id")
+      .notNull()
+      .references(() => warehouses.id, { onDelete: "cascade" }),
+    quantity: integer("quantity").notNull().default(0),
+    syncedAt: text("synced_at")
+      .notNull()
+      .$defaultFn(() => new Date().toISOString()),
+  },
+  (t) => [uniqueIndex("other_brand_stock_uq").on(t.variantId, t.warehouseId)],
+);
+
+/** Продажи чужих брендов, свёрнутые по дню — только штуки, без выручки/
+ * себестоимости: для целевого остатка в «Перемещениях» больше ничего не
+ * нужно, а деньгами по чужим брендам Luna не занимается. */
+export const otherBrandSalesDaily = sqliteTable(
+  "other_brand_sales_daily",
+  {
+    id: id(),
+    variantId: text("variant_id")
+      .notNull()
+      .references(() => otherBrandVariants.id, { onDelete: "cascade" }),
+    warehouseId: text("warehouse_id"),
+    day: text("day").notNull(), // YYYY-MM-DD
+    units: integer("units").notNull().default(0),
+  },
+  (t) => [
+    uniqueIndex("other_brand_sales_daily_uq").on(t.variantId, t.warehouseId, t.day),
+    index("other_brand_sales_day_idx").on(t.day),
+  ],
+);
+
+// ============================================================
 // BOM — состав изделия
 // ============================================================
 

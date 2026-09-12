@@ -304,9 +304,14 @@ function BucketGroup({
                   />
                 </td>
                 <td className="px-2 py-2 font-medium text-[var(--color-ocean)]">
-                  <a href={`/products/${r.productId}`} className="no-underline hover:underline">
-                    {r.sku}
-                  </a>
+                  {r.isOtherBrand ? (
+                    // У чужих брендов нет карточки /products/[id] — ссылку не рисуем
+                    <span>{r.sku}</span>
+                  ) : (
+                    <a href={`/products/${r.productId}`} className="no-underline hover:underline">
+                      {r.sku}
+                    </a>
+                  )}
                 </td>
                 <td className="px-2 py-2">
                   <span>{r.productName}</span>

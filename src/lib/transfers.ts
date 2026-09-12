@@ -290,6 +290,7 @@ export async function getTransferRecommendations(
       collectionId: b.collectionId,
       collectionName: b.collectionName,
       brand,
+      isOtherBrand: false,
       isNew,
       stock: { fotesko: foteskoQty, phuket: phuketQty, phangan: phanganQty },
       negativeStock: {
@@ -437,6 +438,268 @@ export async function getTransferRecommendations(
     }
   }
 
+  // ---------- чужие бренды: только Phuket/Phangan, только для «Перемещений» ----------
+  //
+  // Данные копятся отдельно от продукции Eva Moon в other_brand_* (см.
+  // @/lib/ainur/sync и схему) — там же гарантируется, что остаток чужого
+  // бренда пишется только на Phuket/Phangan и никогда на Fotesko. Здесь их
+  // достаём и прогоняем через ТЕ ЖЕ САМЫЕ evaluateBoutiqueLeg/priorityScore/
+  // formatReason, что и для своих товаров на этих двух маршрутах — никаких
+  // отдельных бизнес-правил для чужих брендов нет и не планируется.
+  // Fotesko → Phuket для чужих брендов не существует в принципе: это склад
+  // производства/поставок Eva Moon.
+  const otherStockRows = await db
+    .select({
+      variantId: schema.otherBrandStock.variantId,
+      warehouseId: schema.otherBrandStock.warehouseId,
+      quantity: schema.otherBrandStock.quantity,
+      sku: schema.otherBrandVariants.sku,
+      modelName: schema.otherBrandVariants.modelName,
+      brand: schema.otherBrandVariants.brand,
+      color: schema.otherBrandVariants.color,
+      size: schema.otherBrandVariants.size,
+    })
+    .from(schema.otherBrandStock)
+    .innerJoin(
+      schema.otherBrandVariants,
+      eq(schema.otherBrandStock.variantId, schema.otherBrandVariants.id),
+    )
+    .where(
+      and(
+        inArray(schema.otherBrandStock.warehouseId, [phuketId, phanganId]),
+        eq(schema.otherBrandVariants.isArchived, false),
+      ),
+    );
+
+  interface OtherBucket0 {
+    sku: string;
+    modelName: string;
+    brand: string;
+    color: string | null;
+    size: string | null;
+    qty: Record<string, number>;
+  }
+  const byOtherVariant = new Map<string, OtherBucket0>();
+  for (const s of otherStockRows) {
+    let b = byOtherVariant.get(s.variantId);
+    if (!b) {
+      b = {
+        sku: s.sku,
+        modelName: s.modelName,
+        brand: s.brand,
+        color: s.color,
+        size: s.size,
+        qty: {},
+      };
+      byOtherVariant.set(s.variantId, b);
+    }
+    b.qty[s.warehouseId] = Number(s.quantity);
+  }
+
+  const otherVariantIds = [...byOtherVariant.keys()];
+  const otherSalesRows = otherVariantIds.length
+    ? await db
+        .select({
+          variantId: schema.otherBrandSalesDaily.variantId,
+          warehouseId: schema.otherBrandSalesDaily.warehouseId,
+          day: schema.otherBrandSalesDaily.day,
+          units: schema.otherBrandSalesDaily.units,
+        })
+        .from(schema.otherBrandSalesDaily)
+        .where(
+          and(
+            inArray(schema.otherBrandSalesDaily.variantId, otherVariantIds),
+            gte(schema.otherBrandSalesDaily.day, since365),
+          ),
+        )
+    : [];
+
+  const otherSalesByVariantWarehouse = new Map<string, SalesAgg>();
+  for (const r of otherSalesRows) {
+    if (!r.warehouseId) continue;
+    const key = `${r.variantId}|${r.warehouseId}`;
+    let agg = otherSalesByVariantWarehouse.get(key);
+    if (!agg) {
+      agg = { sold90: 0, sold180: 0, sold365: 0, lastSaleAt: null };
+      otherSalesByVariantWarehouse.set(key, agg);
+    }
+    const units = Number(r.units);
+    if (units > 0) {
+      agg.sold365 += units;
+      if (r.day >= since180) agg.sold180 += units;
+      if (r.day >= since90) agg.sold90 += units;
+      if (!agg.lastSaleAt || r.day > agg.lastSaleAt) agg.lastSaleAt = r.day;
+    }
+  }
+  const otherSalesFor = (variantId: string, warehouseId: string): SalesAgg =>
+    otherSalesByVariantWarehouse.get(`${variantId}|${warehouseId}`) ?? {
+      sold90: 0,
+      sold180: 0,
+      sold365: 0,
+      lastSaleAt: null,
+    };
+
+  for (const [variantId, b] of byOtherVariant) {
+    const phuketQty = b.qty[phuketId] ?? 0;
+    const phanganQty = b.qty[phanganId] ?? 0;
+
+    if (phuketQty < 0) {
+      const key = `${variantId}|${phuketId}`;
+      if (!seenNegative.has(key)) {
+        seenNegative.add(key);
+        negativeIssues.push({
+          variantId,
+          sku: b.sku,
+          productName: b.modelName,
+          warehouse: PHUKET,
+          quantity: phuketQty,
+        });
+      }
+    }
+    if (phanganQty < 0) {
+      const key = `${variantId}|${phanganId}`;
+      if (!seenNegative.has(key)) {
+        seenNegative.add(key);
+        negativeIssues.push({
+          variantId,
+          sku: b.sku,
+          productName: b.modelName,
+          warehouse: PHANGAN,
+          quantity: phanganQty,
+        });
+      }
+    }
+
+    const phuketSalesAgg = otherSalesFor(variantId, phuketId);
+    const phanganSalesAgg = otherSalesFor(variantId, phanganId);
+    brandsSeen.add(b.brand);
+
+    const phuketSales: PointSales = {
+      sold90d: phuketSalesAgg.sold90,
+      sold12m: phuketSalesAgg.sold365,
+      lastSaleAt: phuketSalesAgg.lastSaleAt,
+    };
+    const phanganSales: PointSales = {
+      sold90d: phanganSalesAgg.sold90,
+      sold12m: phanganSalesAgg.sold365,
+      lastSaleAt: phanganSalesAgg.lastSaleAt,
+    };
+
+    const otherCommon = {
+      variantId,
+      sku: b.sku,
+      // Нет карточки товара /products/[id] у чужих брендов — используем сам
+      // variantId, а UI (см. isOtherBrand) не рисует по нему ссылку.
+      productId: variantId,
+      productName: b.modelName,
+      size: b.size,
+      color: b.color,
+      collectionId: `other:${b.brand}`,
+      collectionName: b.brand,
+      brand: b.brand,
+      isOtherBrand: true,
+      // Нет надёжного сигнала "новинка" для чужих брендов (createdAt в
+      // other_brand_variants — момент первой синхронизации, а не реальная
+      // дата появления товара) — не показываем как новинку.
+      isNew: false,
+      stock: { fotesko: 0, phuket: phuketQty, phangan: phanganQty },
+      negativeStock: { fotesko: false, phuket: phuketQty < 0, phangan: phanganQty < 0 },
+      hasNegativeStock: phuketQty < 0 || phanganQty < 0,
+      sales: {
+        phuket90: phuketSalesAgg.sold90,
+        phangan90: phanganSalesAgg.sold90,
+        phuket12m: phuketSalesAgg.sold365,
+        phangan12m: phanganSalesAgg.sold365,
+        phuketPeriod: periodValue(phuketSalesAgg, period),
+        phanganPeriod: periodValue(phanganSalesAgg, period),
+      },
+    };
+
+    // --- Phuket → Phangan ---
+    const otherToPhangan = evaluateBoutiqueLeg({
+      sourceRawQty: phuketQty,
+      destRawQty: phanganQty,
+      sourceSales: phuketSales,
+      destSales: phanganSales,
+      isNew: false,
+    });
+    if (otherToPhangan && otherToPhangan.sendQty > 0) {
+      rowsByRoute["phuket-phangan"].push({
+        ...otherCommon,
+        from: PHUKET,
+        to: PHANGAN,
+        lastSaleAtDest: phanganSalesAgg.lastSaleAt,
+        suggestedQty: otherToPhangan.sendQty,
+        maxQty: otherToPhangan.sourceAvailable,
+        reason: formatReason(otherToPhangan.reason, { dest: PHANGAN, source: PHUKET }),
+        bucket: otherToPhangan.bucket,
+        lastUnitWarning: otherToPhangan.lastUnitWarning,
+        priority: priorityScore({
+          destAvailable: otherToPhangan.destAvailable,
+          destSoldOutRecently: otherToPhangan.destAvailable === 0 && phanganSalesAgg.sold90 > 0,
+          sold90d: phanganSalesAgg.sold90,
+          sold12m: phanganSalesAgg.sold365,
+          isNew: false,
+        }),
+      });
+    } else if (otherToPhangan && otherToPhangan.bucket === "needsPurchase") {
+      rowsByRoute["phuket-phangan"].push({
+        ...otherCommon,
+        from: PHUKET,
+        to: PHANGAN,
+        lastSaleAtDest: phanganSalesAgg.lastSaleAt,
+        suggestedQty: 0,
+        maxQty: otherToPhangan.sourceAvailable,
+        reason: formatReason("NEEDS_PURCHASE"),
+        bucket: "needsPurchase",
+        lastUnitWarning: false,
+        priority: 0,
+      });
+    }
+
+    // --- Phangan → Phuket ---
+    const otherToPhuket = evaluateBoutiqueLeg({
+      sourceRawQty: phanganQty,
+      destRawQty: phuketQty,
+      sourceSales: phanganSales,
+      destSales: phuketSales,
+      isNew: false,
+    });
+    if (otherToPhuket && otherToPhuket.sendQty > 0) {
+      rowsByRoute["phangan-phuket"].push({
+        ...otherCommon,
+        from: PHANGAN,
+        to: PHUKET,
+        lastSaleAtDest: phuketSalesAgg.lastSaleAt,
+        suggestedQty: otherToPhuket.sendQty,
+        maxQty: otherToPhuket.sourceAvailable,
+        reason: formatReason(otherToPhuket.reason, { dest: PHUKET, source: PHANGAN }),
+        bucket: otherToPhuket.bucket,
+        lastUnitWarning: otherToPhuket.lastUnitWarning,
+        priority: priorityScore({
+          destAvailable: otherToPhuket.destAvailable,
+          destSoldOutRecently: otherToPhuket.destAvailable === 0 && phuketSalesAgg.sold90 > 0,
+          sold90d: phuketSalesAgg.sold90,
+          sold12m: phuketSalesAgg.sold365,
+          isNew: false,
+        }),
+      });
+    } else if (otherToPhuket && otherToPhuket.bucket === "needsPurchase") {
+      rowsByRoute["phangan-phuket"].push({
+        ...otherCommon,
+        from: PHANGAN,
+        to: PHUKET,
+        lastSaleAtDest: phuketSalesAgg.lastSaleAt,
+        suggestedQty: 0,
+        maxQty: otherToPhuket.sourceAvailable,
+        reason: formatReason("NEEDS_PURCHASE"),
+        bucket: "needsPurchase",
+        lastUnitWarning: false,
+        priority: 0,
+      });
+    }
+  }
+
   // ---------- фильтры (общие для всех вкладок) ----------
   function applyFilters(rows: TransferTableRow[]): TransferTableRow[] {
     let out = rows;
@@ -461,6 +724,7 @@ export async function getTransferRecommendations(
 
   const collMap = new Map<string, string>();
   for (const b of byVariant.values()) collMap.set(b.collectionId, b.collectionName);
+  for (const b of byOtherVariant.values()) collMap.set(`other:${b.brand}`, b.brand);
 
   const routes: RouteRows[] = TRANSFER_ROUTES.map((route) => {
     const rows = applyFilters(rowsByRoute[route.key]).sort((a, c) => {

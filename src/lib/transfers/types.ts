@@ -25,6 +25,9 @@ export interface TransferTableRow {
   collectionId: string;
   collectionName: string;
   brand: string;
+  /** true — товар чужого бренда (см. other_brand_*), у него нет карточки
+   * /products/[id], ссылку на неё рисовать нельзя. */
+  isOtherBrand: boolean;
   from: string;
   to: string;
   stock: { fotesko: number; phuket: number; phangan: number };
