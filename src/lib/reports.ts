@@ -370,3 +370,184 @@ export async function ordersStatus(opts: { showMoney?: boolean } = {}) {
     }),
   };
 }
+
+// ============================================================
+// Экспорт для планирования сезона (только Eva Moon, активные варианты)
+// ============================================================
+//
+// В отличие от productCard/salesByMonth это не поиск по одной модели, а
+// массовая выгрузка сразу по многим SKU: себестоимость/цена, остаток на
+// наших складах, продажи по месяцам с 2024-01 и уже подтверждённые (не
+// полученные) строки заказов на пошив — всё, что нужно для планирования
+// повторов к сезону, без сотен отдельных вызовов product_card.
+//
+// Единица анализа — SKU (модель+цвет+размер), коллекции не сворачиваем.
+
+export interface SeasonExportInput {
+  /** ограничить одной коллекцией (часть названия) — без этого ответ рискует быть огромным */
+  collection?: string;
+  limit?: number;
+  offset?: number;
+  /** начало окна помесячных продаж, YYYY-MM-DD; по умолчанию — с января 2024 */
+  salesFrom?: string;
+}
+
+const SEASON_EXPORT_MAX_ROWS = 500;
+
+export async function seasonPlanningExport(input: SeasonExportInput = {}) {
+  const limit = Math.min(input.limit ?? SEASON_EXPORT_MAX_ROWS, SEASON_EXPORT_MAX_ROWS);
+  const offset = input.offset ?? 0;
+  const salesFrom = input.salesFrom ?? "2024-01-01";
+
+  const conds = [
+    eq(schema.productVariants.isArchived, false),
+    eq(schema.products.isArchived, false),
+    eq(schema.collections.isArchived, false),
+  ];
+  if (input.collection) {
+    conds.push(like(schema.collections.name, `%${input.collection}%`));
+  }
+
+  const totalRow = await db
+    .select({ count: sql<number>`COUNT(*)` })
+    .from(schema.productVariants)
+    .innerJoin(schema.products, eq(schema.productVariants.productId, schema.products.id))
+    .innerJoin(schema.collections, eq(schema.products.collectionId, schema.collections.id))
+    .where(and(...conds));
+
+  const variants = await db
+    .select({
+      variantId: schema.productVariants.id,
+      sku: schema.productVariants.sku,
+      color: schema.productVariants.color,
+      size: schema.productVariants.size,
+      price: schema.productVariants.price,
+      purchaseCost: schema.productVariants.ainurPurchaseCost,
+      createdAt: schema.productVariants.createdAt,
+      model: schema.products.name,
+      collection: schema.collections.name,
+    })
+    .from(schema.productVariants)
+    .innerJoin(schema.products, eq(schema.productVariants.productId, schema.products.id))
+    .innerJoin(schema.collections, eq(schema.products.collectionId, schema.collections.id))
+    .where(and(...conds))
+    .orderBy(asc(schema.productVariants.sku))
+    .limit(limit)
+    .offset(offset);
+
+  if (variants.length === 0) {
+    return {
+      totalMatching: Number(totalRow[0]?.count ?? 0),
+      returned: 0,
+      salesFrom,
+      variants: [],
+      note: "Ничего не найдено — проверь название коллекции или offset.",
+    };
+  }
+
+  const ids = variants.map((v) => v.variantId);
+
+  // остаток по всем складам, где он есть
+  const stock = await db
+    .select({
+      variantId: schema.variantStock.variantId,
+      quantity: schema.variantStock.quantity,
+      warehouse: schema.warehouses.name,
+    })
+    .from(schema.variantStock)
+    .innerJoin(schema.warehouses, eq(schema.variantStock.warehouseId, schema.warehouses.id))
+    .where(inArray(schema.variantStock.variantId, ids));
+
+  const stockBy = new Map<string, Record<string, number>>();
+  for (const s of stock) {
+    const e = stockBy.get(s.variantId) ?? {};
+    e[s.warehouse] = Number(s.quantity);
+    stockBy.set(s.variantId, e);
+  }
+
+  // продажи по месяцам с salesFrom — сразу по всем найденным вариантам
+  const sales = await db
+    .select({
+      variantId: schema.variantSalesDaily.variantId,
+      day: schema.variantSalesDaily.day,
+      units: schema.variantSalesDaily.units,
+      revenue: schema.variantSalesDaily.revenue,
+    })
+    .from(schema.variantSalesDaily)
+    .where(
+      and(
+        inArray(schema.variantSalesDaily.variantId, ids),
+        gte(schema.variantSalesDaily.day, salesFrom),
+      ),
+    );
+
+  const salesBy = new Map<string, Map<string, { units: number; revenue: number }>>();
+  for (const s of sales) {
+    const month = s.day.slice(0, 7);
+    let byMonth = salesBy.get(s.variantId);
+    if (!byMonth) {
+      byMonth = new Map();
+      salesBy.set(s.variantId, byMonth);
+    }
+    const e = byMonth.get(month) ?? { units: 0, revenue: 0 };
+    e.units += Number(s.units);
+    e.revenue += Number(s.revenue);
+    byMonth.set(month, e);
+  }
+
+  // подтверждённые поступления — незакрытые строки заказов на пошив
+  const openLines = await db
+    .select({
+      variantId: schema.productionOrderLines.variantId,
+      quantity: schema.productionOrderLines.quantity,
+      qtyProduced: schema.productionOrderLines.qtyProduced,
+      plannedReadyAt: schema.productionOrderLines.plannedReadyAt,
+      orderStatus: schema.productionOrders.status,
+    })
+    .from(schema.productionOrderLines)
+    .innerJoin(
+      schema.productionOrders,
+      eq(schema.productionOrderLines.orderId, schema.productionOrders.id),
+    )
+    .where(inArray(schema.productionOrderLines.variantId, ids));
+
+  const incomingBy = new Map<string, { qty: number; plannedReadyAt: string | null }[]>();
+  for (const l of openLines) {
+    if (!l.variantId) continue;
+    if (l.orderStatus === "RECEIVED" || l.orderStatus === "CANCELLED") continue;
+    const remaining = Number(l.quantity) - Number(l.qtyProduced ?? 0);
+    if (remaining <= 0) continue;
+    const arr = incomingBy.get(l.variantId) ?? [];
+    arr.push({ qty: remaining, plannedReadyAt: l.plannedReadyAt });
+    incomingBy.set(l.variantId, arr);
+  }
+
+  return {
+    totalMatching: Number(totalRow[0]?.count ?? 0),
+    returned: variants.length,
+    salesFrom,
+    variants: variants.map((v) => {
+      const price = v.price ?? null;
+      const cost = v.purchaseCost ?? null;
+      const monthly = [...(salesBy.get(v.variantId)?.entries() ?? [])]
+        .filter(([, e]) => e.units !== 0 || e.revenue !== 0)
+        .sort((a, b) => a[0].localeCompare(b[0]))
+        .map(([month, e]) => ({ month, units: e.units, revenueThb: round(e.revenue) }));
+      return {
+        sku: v.sku,
+        model: v.model,
+        collection: v.collection,
+        color: v.color,
+        size: v.size,
+        createdAt: v.createdAt,
+        priceThb: price,
+        purchaseCostThb: cost,
+        marginPerUnitThb: price && cost ? round(price - cost) : null,
+        marginPct: price && cost && price > 0 ? round(((price - cost) / price) * 100) : null,
+        stockByWarehouse: stockBy.get(v.variantId) ?? {},
+        monthlySales: monthly,
+        incomingConfirmed: incomingBy.get(v.variantId) ?? [],
+      };
+    }),
+  };
+}

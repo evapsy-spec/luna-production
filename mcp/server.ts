@@ -24,7 +24,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { mcpAuthRouter, getOAuthProtectedResourceMetadataUrl } from "@modelcontextprotocol/sdk/server/auth/router.js";
 import { requireBearerAuth } from "@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js";
-import { salesByMonth, productCard, ordersStatus } from "@/lib/reports";
+import { salesByMonth, productCard, ordersStatus, seasonPlanningExport } from "@/lib/reports";
 import { getReplenish, LOW_STOCK_THRESHOLD } from "@/lib/replenish";
 import { createOAuthProvider, createConsentHandler } from "./oauth.js";
 
@@ -135,6 +135,28 @@ function buildServer(): McpServer {
         })),
       });
     },
+  );
+
+  server.registerTool(
+    "season_planning_export",
+    {
+      title: "Экспорт для планирования сезона",
+      description:
+        "Массовая выгрузка по SKU EVA MOON (не по одному, а сразу многими) — " +
+        "для планирования пошива к сезону: цена, себестоимость, остаток по " +
+        "складам, продажи по месяцам с января 2024 (или с salesFrom) и " +
+        "подтверждённые, но ещё не полученные строки заказов на пошив по " +
+        "этому SKU. Без фильтра по коллекции результат может быть большим — " +
+        "ограничен limit/offset (по умолчанию до 500 SKU за раз).",
+      inputSchema: {
+        collection: z.string().optional().describe("ограничить одной коллекцией (часть названия)"),
+        limit: z.number().int().min(1).max(500).optional(),
+        offset: z.number().int().min(0).optional(),
+        salesFrom: z.string().optional().describe("YYYY-MM-DD, по умолчанию 2024-01-01"),
+      },
+    },
+    async ({ collection, limit, offset, salesFrom }) =>
+      textResult(await seasonPlanningExport({ collection, limit, offset, salesFrom })),
   );
 
   server.registerTool(
