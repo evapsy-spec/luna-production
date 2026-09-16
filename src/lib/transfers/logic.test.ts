@@ -85,6 +85,31 @@ test("целевое количество: 1 по умолчанию — для 
   );
 });
 
+test("целевое количество: если известны остатки обеих точек — делим маршрут пополам, не 0", () => {
+  assert.equal(
+    computeTargetQty({
+      sold90d: 0,
+      sold12m: 0,
+      isNew: false,
+      otherPointHasDemand: true,
+      thisPointAvailable: 0,
+      otherPointAvailable: 10,
+    }),
+    5,
+  );
+  assert.equal(
+    computeTargetQty({
+      sold90d: 0,
+      sold12m: 0,
+      isNew: false,
+      otherPointHasDemand: true,
+      thisPointAvailable: 0,
+      otherPointAvailable: 1,
+    }),
+    1,
+  );
+});
+
 // ---------- сравнение спроса и распределение дефицита ----------
 
 test("compareDemand: выше продажи за 90 дней — приоритетнее", () => {
@@ -199,6 +224,23 @@ test("товар без продаж нигде и не новый — уход�
   });
   assert.ok(r);
   assert.equal(r!.bucket, "unconfirmedDemand");
+});
+
+test("Панган → Пхукет: модель проверена на Пангане, на Пхукете никогда не продавалась — теперь предлагаем попробовать, а не молчим", () => {
+  // Ева, 2026-09-16: свежая закупка Mockni на Пангане, модель там реально
+  // продаётся, но на Пхукете этот цвет ещё не пробовали ни разу — раньше
+  // это давало target=0 у Пхукета и рекомендация пропадала совсем.
+  const r = evaluateBoutiqueLeg({
+    sourceRawQty: 10,
+    destRawQty: 0,
+    sourceSales: { sold90d: 2, sold12m: 4, lastSaleAt: "2026-09-01" },
+    destSales: { sold90d: 0, sold12m: 0, lastSaleAt: null },
+    isNew: false,
+  });
+  assert.ok(r, "рекомендация должна появиться, а не пропасть совсем");
+  assert.ok(r!.sendQty > 0);
+  // делим остаток маршрута (10 + 0) пополам -> target у Пхукета = 5
+  assert.equal(r!.destTarget, 5);
 });
 
 test("отрицательный остаток на источнике — не считается доступным, а не даёт отрицательную рекомендацию", () => {

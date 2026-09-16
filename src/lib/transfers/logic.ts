@@ -83,6 +83,22 @@ export interface TargetInput {
   isNew: boolean;
   /** у ДРУГОЙ точки в этом же маршруте есть подтверждённый спрос (sold12m > 0 либо isNew) */
   otherPointHasDemand: boolean;
+  /**
+   * Остаток этой точки и точки-соседа по маршруту — используются ТОЛЬКО
+   * для случая «здесь ещё не продавалось, а у соседа спрос подтверждён»
+   * (см. ниже): вместо жёсткого 0 делим общий остаток маршрута пополам,
+   * а не оставляем всё там, где уже продавалось. Если не передано —
+   * ведёт себя как раньше (0): это для точки-источника, которая сама
+   * никогда не продавала товар и не должна резервировать его для себя,
+   * когда сосед его явно ждёт — там splitting не нужен, только у точки,
+   * которую мы решаем, стоит ли впервые попробовать.
+   * Ева, 2026-09-16, про партию Mockni на Пангане: «можно вносить на
+   * пробу, не обязательно минимум один, можно и два, в зависимости от
+   * количества... если товар новый пришёл, логично разделить его между
+   * двух магазинов поровну».
+   */
+  thisPointAvailable?: number;
+  otherPointAvailable?: number;
 }
 
 /**
@@ -95,10 +111,19 @@ export interface TargetInput {
  * запасного «1».
  */
 export function computeTargetQty(input: TargetInput): number {
-  const { sold90d, sold12m, isNew, otherPointHasDemand } = input;
+  const { sold90d, sold12m, isNew, otherPointHasDemand, thisPointAvailable, otherPointAvailable } =
+    input;
   if (sold90d >= TARGET_3_MIN_SOLD_90D || sold12m >= TARGET_3_MIN_SOLD_12M) return 3;
   if (sold12m >= 1 || isNew) return 2;
-  if (sold12m === 0 && sold90d === 0 && !isNew && otherPointHasDemand) return 0;
+  if (sold12m === 0 && sold90d === 0 && !isNew && otherPointHasDemand) {
+    // Раньше здесь был жёсткий 0 — и рекомендация «стоит попробовать на
+    // непроверенной точке» пропадала совсем, даже если это уже доказанный
+    // бестселлер на соседней точке, просто пока не пробовали здесь. Если
+    // остатки обеих точек известны — делим общий остаток маршрута пополам
+    // (минимум 1), а не отдаём всё туда, где уже продавалось.
+    if (thisPointAvailable === undefined || otherPointAvailable === undefined) return 0;
+    return Math.max(1, Math.round((thisPointAvailable + otherPointAvailable) / 2));
+  }
   return 1;
 }
 
@@ -310,6 +335,10 @@ export function evaluateBoutiqueLeg(input: BoutiqueLegInput): BoutiqueLegResult 
     sold12m: input.destSales.sold12m,
     isNew: input.isNew,
     otherPointHasDemand: sourceHasDemand,
+    // Только здесь: решаем, стоит ли впервые попробовать эту точку — если
+    // да, делим остаток маршрута пополам, а не даём равно 0 (см. TargetInput).
+    thisPointAvailable: dest.available,
+    otherPointAvailable: source.available,
   });
   const sourceTarget = computeTargetQty({
     sold90d: input.sourceSales.sold90d,
@@ -415,6 +444,14 @@ export interface FoteskoLegResult {
  * назначение — всегда Пхукет (Панган получает своё отдельным перемещением
  * Пхукет→Панган). Пример из ТЗ: Fotesko 10 / Phuket 0 / Phangan 0 →
  * рекомендация Fotesko→Phuket на нужное количество.
+ *
+ * ВАЖНО (Ева, 2026-09-16): «деление остатка маршрута пополам» из
+ * computeTargetQty (см. TargetInput.thisPointAvailable/otherPointAvailable)
+ * сюда НЕ подключено — ниже phuketTarget/phanganTarget вызываются без этих
+ * полей, то есть здесь по-прежнему старое поведение (target=0, если точка
+ * сама не продавала, а другая точка маршрута — да). Изменение затрагивает
+ * только вкладки «Пхукет→Панган» и «Панган→Пхукет» (evaluateBoutiqueLeg
+ * ниже), не «Фотеско→Пхукет».
  */
 export function evaluateFoteskoLeg(input: FoteskoLegInput): FoteskoLegResult | null {
   const fotesko = sanitizeStock(input.foteskoRawQty);
