@@ -214,6 +214,31 @@ async function deleteFabricLink(formData: FormData) {
   revalidatePath(`/samples/${modelId}`);
 }
 
+async function deleteModel(formData: FormData) {
+  "use server";
+  const user = await getCurrentUser();
+  if (!user) redirect("/login");
+
+  const id = String(formData.get("id") ?? "");
+  const before = (
+    await db.select().from(schema.sampleModels).where(eq(schema.sampleModels.id, id)).limit(1)
+  )[0];
+  if (!before) redirect("/samples");
+
+  // Версии и привязанные ткани удалятся каскадно (см. onDelete: "cascade" в schema.ts)
+  await db.delete(schema.sampleModels).where(eq(schema.sampleModels.id, id));
+
+  await writeAudit(user, {
+    action: "DELETE",
+    entityType: "SampleModel",
+    entityId: id,
+    entityName: before.name,
+  });
+
+  revalidatePath("/samples");
+  redirect("/samples?ok=deleted");
+}
+
 // ============================================================
 // Страница
 // ============================================================
@@ -270,6 +295,12 @@ export default async function SampleModelPage({
               </LinkButton>
             ) : null}
             <LinkButton href="/samples">Назад к списку</LinkButton>
+            <form action={deleteModel}>
+              <input type="hidden" name="id" value={model.id} />
+              <Button type="submit" variant="danger">
+                Удалить модель
+              </Button>
+            </form>
           </div>
         }
       />

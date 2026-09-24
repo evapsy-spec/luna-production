@@ -4,6 +4,7 @@ import { eq } from "drizzle-orm";
 import { db, schema } from "@/lib/db/client";
 import { getCurrentUser, requireUser, writeAudit } from "@/lib/auth";
 import {
+  Callout,
   Card,
   PageHeader,
   LinkButton,
@@ -120,7 +121,12 @@ interface Params {
   assignee?: string;
   season?: string;
   q?: string;
+  ok?: string;
 }
+
+const OK_MESSAGES: Record<string, string> = {
+  deleted: "Модель удалена",
+};
 
 export default async function SamplesPage({
   searchParams,
@@ -173,6 +179,10 @@ export default async function SamplesPage({
           </LinkButton>
         }
       />
+
+      {params.ok ? (
+        <Callout tone="ok" title={OK_MESSAGES[params.ok] ?? "Готово"}>{null}</Callout>
+      ) : null}
 
       {/* ---------- Сводка по категориям (кликабельная, с учётом фильтров) ---------- */}
       <div className="mb-4 -mx-4 overflow-x-auto px-4">
