@@ -17,6 +17,7 @@ interface NavItem {
 const ITEMS: NavItem[] = [
   { href: "/", label: "Главная", icon: "◉" },
   { href: "/orders", label: "Заказы", icon: "✂" },
+  { href: "/samples", label: "Образцы", icon: "✎" },
   { href: "/replenish", label: "На исходе", icon: "⚑" },
   { href: "/transfers", label: "Перемещения", icon: "⇄" },
   { href: "/collections", label: "Коллекции", icon: "❖" },

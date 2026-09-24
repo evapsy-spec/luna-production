@@ -1245,3 +1245,217 @@ export const botPendingActions = sqliteTable("bot_pending_actions", {
   resolvedByName: text("resolved_by_name"),
 });
 
+
+// ============================================================
+// ОБРАЗЦЫ (разработка новых моделей) — добавлено 24.09.2026
+// ============================================================
+
+/** Дизайнер, который ведёт разработку модели — самостоятельная роль, не логин/пароль */
+export const DESIGNERS = ["EVA", "NATALIE"] as const;
+export type Designer = (typeof DESIGNERS)[number];
+
+/**
+ * У кого сейчас задача: Ева, Натали или фабрика, привязанная к модели.
+ * Если FACTORY — в интерфейсе показываем не слово «Фабрика», а название
+ * конкретной фабрики модели (sampleModels.factoryId), см. ТЗ п.3.
+ */
+export const SAMPLE_ASSIGNEES = ["EVA", "NATALIE", "FACTORY"] as const;
+export type SampleAssignee = (typeof SAMPLE_ASSIGNEES)[number];
+
+/**
+ * Статусы разработки образца. % прогресса пользователь не вводит вручную —
+ * определяется статусом (см. SAMPLE_STATUS_PROGRESS в @/lib/samples).
+ * DROPPED — «Снято»: решили не выпускать модель, остаётся в истории, но по
+ * умолчанию скрыта среди активных разработок (ТЗ п.5).
+ */
+export const SAMPLE_STATUSES = [
+  "IDEA",
+  "SPEC_READY",
+  "MATERIALS_SELECTED",
+  "SENT_TO_FACTORY",
+  "SAMPLE_IN_PROGRESS",
+  "SAMPLE_READY",
+  "SAMPLE_REVIEW",
+  "REVISION",
+  "DESIGNER_APPROVED",
+  "FINAL_APPROVED",
+  "DROPPED",
+] as const;
+export type SampleStatus = (typeof SAMPLE_STATUSES)[number];
+
+/** Справочник категорий модели — пополняемый (Ева: «должна быть возможность добавлять новые») */
+export const sampleCategories = sqliteTable("sample_categories", {
+  id: id(),
+  name: text("name").notNull().unique(),
+  sortOrder: integer("sort_order").notNull().default(0),
+  isArchived: integer("is_archived", { mode: "boolean" }).notNull().default(false),
+  createdAt: now(),
+});
+
+/**
+ * Карточка модели в разработке — одна модель = одна карточка, разные цвета
+ * одной модели НЕ создают отдельные карточки (ТЗ п.2). На текущем этапе
+ * модель разрабатывается только на одной фабрике.
+ */
+export const sampleModels = sqliteTable(
+  "sample_models",
+  {
+    id: id(),
+    name: text("name").notNull(),
+    categoryId: text("category_id").references(() => sampleCategories.id, {
+      onDelete: "set null",
+    }),
+    status: text("status").notNull().default("IDEA"),
+
+    /** Ведёт разработку — Ева или Натали (ТЗ п.6) */
+    designer: text("designer").notNull(),
+    /** У кого сейчас задача — может отличаться от designer (ТЗ п.3) */
+    assignee: text("assignee").notNull(),
+
+    factoryId: text("factory_id").references(() => factories.id, {
+      onDelete: "set null",
+    }),
+
+    currentTask: text("current_task"),
+    dueDate: text("due_date"),
+
+    /** Ссылка на папку МОДЕЛИ в Google Drive, не на отдельный файл (ТЗ п.7) */
+    driveFolderUrl: text("drive_folder_url"),
+
+    /** Превью эскиза/фото — загружается в приложение, как фото тканей/товаров */
+    sketchPhotoUrl: text("sketch_photo_url"),
+
+    /** Свободный текст: «SS27», «Beach Capsule 27» — НЕ каталожная collections (ТЗ п.12) */
+    seasonCollection: text("season_collection"),
+
+    /** Ориентировочная цена производства ед. от фабрики, THB — НЕ Sample cost (ТЗ п.10) */
+    estimatedUnitCostThb: real("estimated_unit_cost_thb"),
+
+    designerApprovedAt: text("designer_approved_at"),
+    finalApprovedAt: text("final_approved_at"),
+    droppedAt: text("dropped_at"),
+
+    /**
+     * Задел на будущее (ТЗ п.15): после «Финально утверждено» на карточке
+     * появляется кнопка «Создать заказ». Саму логику создания заказа в
+     * рамках этого ТЗ не делаем, но связь в архитектуре уже предусмотрена.
+     */
+    productionOrderId: text("production_order_id").references(
+      () => productionOrders.id,
+      { onDelete: "set null" },
+    ),
+
+    note: text("note"),
+    createdAt: now(),
+    updatedAt: text("updated_at")
+      .notNull()
+      .$defaultFn(() => new Date().toISOString()),
+  },
+  (t) => [
+    index("sample_status_idx").on(t.status),
+    index("sample_category_idx").on(t.categoryId),
+    index("sample_factory_idx").on(t.factoryId),
+  ],
+);
+
+/**
+ * История физических образцов внутри карточки модели (Sample V1/V2/V3…) —
+ * не выводится на основной экран (ТЗ п.8).
+ */
+export const sampleVersions = sqliteTable(
+  "sample_versions",
+  {
+    id: id(),
+    modelId: text("model_id")
+      .notNull()
+      .references(() => sampleModels.id, { onDelete: "cascade" }),
+    versionNumber: integer("version_number").notNull(),
+    date: text("date")
+      .notNull()
+      .$defaultFn(() => new Date().toISOString()),
+    photoUrl: text("photo_url"),
+    comment: text("comment"),
+    /** Затраты на разработку — НЕ входят в производственную себестоимость (ТЗ п.9) */
+    sampleCostThb: real("sample_cost_thb"),
+    shippingCostThb: real("shipping_cost_thb"),
+    createdAt: now(),
+  },
+  (t) => [index("sample_version_model_idx").on(t.modelId)],
+);
+
+/**
+ * Ткани/материалы модели. Если ткань уже в библиотеке — fabricId ссылается
+ * на неё. Если это ещё не оформленный кандидат («только присматриваемся») —
+ * заполняем поля прямо тут, без обязательной привязки (Ева, 24.09.2026:
+ * «заполняем как бы идеи — состав, цвет, стоимость, поставщик ткани», на
+ * основной экран «Образцов» это не выводится, только внутри карточки
+ * модели). Большинство полей опциональны — пустое не должно «захламлять»
+ * интерфейс (ТЗ п.11).
+ */
+export const sampleFabricLinks = sqliteTable(
+  "sample_fabric_links",
+  {
+    id: id(),
+    modelId: text("model_id")
+      .notNull()
+      .references(() => sampleModels.id, { onDelete: "cascade" }),
+    /** Заполняется, когда кандидат оформлен как полноценная запись в библиотеке тканей */
+    fabricId: text("fabric_id").references(() => fabrics.id, {
+      onDelete: "set null",
+    }),
+
+    name: text("name"),
+    photoUrl: text("photo_url"),
+    supplierName: text("supplier_name"),
+    composition: text("composition"),
+    color: text("color"),
+    price: real("price"),
+    currency: text("currency"),
+    widthCm: real("width_cm"),
+    moq: text("moq"),
+    code: text("code"),
+    url: text("url"),
+    note: text("note"),
+
+    createdAt: now(),
+  },
+  (t) => [index("sample_fabric_model_idx").on(t.modelId)],
+);
+
+export const sampleModelsRelations = relations(sampleModels, ({ one, many }) => ({
+  category: one(sampleCategories, {
+    fields: [sampleModels.categoryId],
+    references: [sampleCategories.id],
+  }),
+  factory: one(factories, {
+    fields: [sampleModels.factoryId],
+    references: [factories.id],
+  }),
+  productionOrder: one(productionOrders, {
+    fields: [sampleModels.productionOrderId],
+    references: [productionOrders.id],
+  }),
+  versions: many(sampleVersions),
+  fabricLinks: many(sampleFabricLinks),
+}));
+
+export const sampleVersionsRelations = relations(sampleVersions, ({ one }) => ({
+  model: one(sampleModels, {
+    fields: [sampleVersions.modelId],
+    references: [sampleModels.id],
+  }),
+}));
+
+export const sampleFabricLinksRelations = relations(
+  sampleFabricLinks,
+  ({ one }) => ({
+    model: one(sampleModels, {
+      fields: [sampleFabricLinks.modelId],
+      references: [sampleModels.id],
+    }),
+    fabric: one(fabrics, {
+      fields: [sampleFabricLinks.fabricId],
+      references: [fabrics.id],
+    }),
+  }),
+);
