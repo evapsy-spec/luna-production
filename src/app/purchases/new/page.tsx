@@ -14,7 +14,7 @@ import {
   SectionTitle,
   Select,
 } from "@/components/ui";
-import { parseNumber, parseText } from "../../fabrics/fabric-fields";
+import { CURRENCIES, parseNumber, parseText } from "../../fabrics/fabric-fields";
 
 export const metadata = { title: "Новая заявка на ткань — Luna Production" };
 
@@ -35,19 +35,39 @@ async function nextNumber(): Promise<string> {
   return `${prefix}${String(maxSeq + 1).padStart(3, "0")}`;
 }
 
+interface LineInput {
+  fabricId: string | null;
+  draftName: string | null;
+  metersNeeded: number;
+  pricePerMeter: number | null;
+  currency: string | null;
+  fxRateToThb: number | null;
+  note: string | null;
+}
+
 async function createPurchase(formData: FormData) {
   "use server";
   const user = await getCurrentUser();
   if (!user) redirect("/login");
 
-  const rows: { fabricId: string; metersNeeded: number; note: string | null }[] = [];
+  const rows: LineInput[] = [];
   for (let i = 0; i < LINE_SLOTS; i++) {
     const fabricId = parseText(formData.get(`fabricId_${i}`));
+    const draftName = parseText(formData.get(`draftName_${i}`));
     const meters = parseNumber(formData.get(`meters_${i}`));
-    if (!fabricId || meters == null || meters <= 0) continue;
+    // строка существует, только если выбрана ткань из библиотеки ИЛИ вписано
+    // название новой — а метраж больше нуля обязателен в обоих случаях
+    if ((!fabricId && !draftName) || meters == null || meters <= 0) continue;
+
+    const price = parseNumber(formData.get(`price_${i}`));
     rows.push({
-      fabricId,
+      // если выбрали существующую ткань — черновик игнорируем, чтобы не путать
+      fabricId: fabricId || null,
+      draftName: fabricId ? null : draftName,
       metersNeeded: meters,
+      pricePerMeter: price,
+      currency: price != null ? (parseText(formData.get(`currency_${i}`)) ?? "THB") : null,
+      fxRateToThb: price != null ? (parseNumber(formData.get(`fx_${i}`)) ?? 1) : null,
       note: parseText(formData.get(`note_${i}`)),
     });
   }
@@ -67,7 +87,11 @@ async function createPurchase(formData: FormData) {
     rows.map((r) => ({
       purchaseId: purchase.id,
       fabricId: r.fabricId,
+      draftName: r.draftName,
       metersNeeded: r.metersNeeded,
+      pricePerMeter: r.pricePerMeter,
+      currency: r.currency,
+      fxRateToThb: r.fxRateToThb,
       note: r.note,
     })),
   );
@@ -122,13 +146,8 @@ export default async function NewPurchasePage({
 
       {flags.error === "lines" ? (
         <Callout tone="critical" title="Заявка не создана">
-          Заполните хотя бы одну строку: ткань и метраж больше нуля.
-        </Callout>
-      ) : null}
-
-      {fabrics.length === 0 ? (
-        <Callout tone="warn" title="Сначала добавьте ткани">
-          Заявку не из чего собрать — в справочнике тканей пусто.
+          Заполните хотя бы одну строку: выберите ткань из библиотеки или
+          впишите название новой, и укажите метраж больше нуля.
         </Callout>
       ) : null}
 
@@ -152,32 +171,78 @@ export default async function NewPurchasePage({
         </Card>
 
         <SectionTitle>Строки заявки</SectionTitle>
+        <p className="-mt-3 mb-3 text-sm text-[var(--color-muted)]">
+          В каждой строке — либо ткань из библиотеки, либо название новой,
+          которой там ещё нет. Цена нужна, только если уже известна —
+          заявку можно собрать и без неё.
+        </p>
         <Card>
           <div className="flex flex-col gap-5">
             {Array.from({ length: LINE_SLOTS }).map((_, i) => (
-              <div key={i} className="grid gap-3 sm:grid-cols-[2fr_1fr_2fr]">
-                <Field label={`Ткань ${i + 1}`}>
-                  <Select name={`fabricId_${i}`} defaultValue="">
-                    <option value="">— пусто —</option>
-                    {fabrics.map((f) => (
-                      <option key={f.id} value={f.id}>
-                        {f.name} · {f.sku}
-                      </option>
-                    ))}
-                  </Select>
-                </Field>
-                <Field label="Метров">
-                  <Input
-                    name={`meters_${i}`}
-                    type="number"
-                    step="0.01"
-                    min="0"
-                    placeholder="0"
-                  />
-                </Field>
-                <Field label="Примечание">
-                  <Input name={`note_${i}`} placeholder="Нужен тот же оттенок" />
-                </Field>
+              <div
+                key={i}
+                className="flex flex-col gap-3 border-b border-[var(--color-line)] pb-5 last:border-0 last:pb-0"
+              >
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <Field label={`Ткань ${i + 1}, из библиотеки`}>
+                    <Select name={`fabricId_${i}`} defaultValue="">
+                      <option value="">— не из библиотеки —</option>
+                      {fabrics.map((f) => (
+                        <option key={f.id} value={f.id}>
+                          {f.name}
+                          {f.sku ? ` · ${f.sku}` : ""}
+                        </option>
+                      ))}
+                    </Select>
+                  </Field>
+                  <Field
+                    label="…или новая ткань"
+                    hint="Заполняйте, только если выше ничего не выбрано"
+                  >
+                    <Input name={`draftName_${i}`} placeholder="Название новой ткани" />
+                  </Field>
+                </div>
+                <div className="grid gap-3 sm:grid-cols-5">
+                  <Field label="Метров">
+                    <Input
+                      name={`meters_${i}`}
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      placeholder="0"
+                    />
+                  </Field>
+                  <Field label="Цена за метр">
+                    <Input
+                      name={`price_${i}`}
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      placeholder="необязательно"
+                    />
+                  </Field>
+                  <Field label="Валюта">
+                    <Select name={`currency_${i}`} defaultValue="THB">
+                      {CURRENCIES.map((c) => (
+                        <option key={c} value={c}>
+                          {c}
+                        </option>
+                      ))}
+                    </Select>
+                  </Field>
+                  <Field label="Курс к THB">
+                    <Input
+                      name={`fx_${i}`}
+                      type="number"
+                      step="0.0001"
+                      min="0"
+                      placeholder="1"
+                    />
+                  </Field>
+                  <Field label="Примечание">
+                    <Input name={`note_${i}`} placeholder="Нужен тот же оттенок" />
+                  </Field>
+                </div>
               </div>
             ))}
           </div>

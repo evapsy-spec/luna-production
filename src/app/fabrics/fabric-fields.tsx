@@ -60,10 +60,9 @@ export function FabricFields({
         />
       </Field>
 
-      <Field label="SKU" required hint="Уникальный код ткани, как в закупках">
+      <Field label="SKU" hint="Необязательно. Уникальный код ткани, как в закупках — если не ведёте коды, оставьте пустым">
         <Input
           name="sku"
-          required
           defaultValue={values.sku ?? ""}
           placeholder="SILK-DO-140"
         />
@@ -146,14 +145,24 @@ export function FabricFields({
       </Field>
 
       <Field label="Поставщик">
-        <Select name="supplierId" defaultValue={values.supplierId ?? ""}>
-          <option value="">— не выбран —</option>
-          {suppliers.map((s) => (
-            <option key={s.id} value={s.id}>
-              {s.name}
-            </option>
-          ))}
-        </Select>
+        <div className="flex items-center gap-2">
+          <Select name="supplierId" defaultValue={values.supplierId ?? ""} className="flex-1">
+            <option value="">— не выбран —</option>
+            {suppliers.map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.name}
+              </option>
+            ))}
+          </Select>
+          <a
+            href="/suppliers/new"
+            target="_blank"
+            rel="noreferrer"
+            className="touch whitespace-nowrap text-sm text-[var(--color-ocean)] underline hover:no-underline"
+          >
+            + Новый
+          </a>
+        </div>
       </Field>
 
       <Field

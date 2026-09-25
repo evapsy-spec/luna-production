@@ -43,6 +43,13 @@
       "when": 1790238269191,
       "tag": "0005_gifted_spitfire",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1790314005788,
+      "tag": "0006_windy_landau",
+      "breakpoints": true
     }
   ]
 }

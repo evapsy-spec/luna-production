@@ -154,7 +154,7 @@ export default async function EditSupplierPage({
                   <Td>
                     <a href={`/fabrics/${f.id}`}>{f.name}</a>
                   </Td>
-                  <Td>{f.sku}</Td>
+                  <Td>{f.sku ?? "—"}</Td>
                   <Td>{f.isOnOrder ? "заказано, ожидаем" : "—"}</Td>
                 </tr>
               ))}

@@ -3,7 +3,7 @@ import Link from "next/link";
 import { revalidatePath } from "next/cache";
 import { and, asc, desc, eq, inArray } from "drizzle-orm";
 import { db, schema } from "@/lib/db/client";
-import { getCurrentUser, writeAudit } from "@/lib/auth";
+import { canSeeMoney, getCurrentUser, writeAudit } from "@/lib/auth";
 import { formatMeters, round2 } from "@/lib/production";
 import {
   Button,
@@ -13,6 +13,7 @@ import {
   Field,
   formatDate,
   LinkButton,
+  Money,
   PageHeader,
   Select,
   StatusPill,
@@ -118,13 +119,14 @@ async function receivePurchase(formData: FormData) {
     .select({
       id: schema.fabricPurchaseLines.id,
       fabricId: schema.fabricPurchaseLines.fabricId,
+      draftName: schema.fabricPurchaseLines.draftName,
       metersNeeded: schema.fabricPurchaseLines.metersNeeded,
       metersOrdered: schema.fabricPurchaseLines.metersOrdered,
       fabricName: schema.fabrics.name,
       fabricSku: schema.fabrics.sku,
     })
     .from(schema.fabricPurchaseLines)
-    .innerJoin(
+    .leftJoin(
       schema.fabrics,
       eq(schema.fabricPurchaseLines.fabricId, schema.fabrics.id),
     )
@@ -134,7 +136,17 @@ async function receivePurchase(formData: FormData) {
     статус: { from: "SENT", to: "RECEIVED" },
   };
 
+  // строки-черновики (ткань ещё не заведена в библиотеке) — приход пропускаем,
+  // остатки по ним проводят вручную после того, как ткань оформят карточкой
+  let skipped = 0;
+
   for (const line of lines) {
+    if (!line.fabricId) {
+      skipped++;
+      continue;
+    }
+    const fabricId = line.fabricId;
+
     // если поставщик не уточнял отгруженный метраж — приходуем запрошенный
     const meters = line.metersOrdered ?? line.metersNeeded;
     if (meters <= 0) continue;
@@ -144,7 +156,7 @@ async function receivePurchase(formData: FormData) {
       .from(schema.fabricStock)
       .where(
         and(
-          eq(schema.fabricStock.fabricId, line.fabricId),
+          eq(schema.fabricStock.fabricId, fabricId),
           eq(schema.fabricStock.warehouseId, warehouseId),
         ),
       )
@@ -161,7 +173,7 @@ async function receivePurchase(formData: FormData) {
     } else {
       await db
         .insert(schema.fabricStock)
-        .values({ fabricId: line.fabricId, warehouseId, onHandM: to });
+        .values({ fabricId, warehouseId, onHandM: to });
     }
 
     if (line.metersOrdered == null) {
@@ -175,9 +187,9 @@ async function receivePurchase(formData: FormData) {
     await db
       .update(schema.fabrics)
       .set({ isOnOrder: false, updatedAt: new Date().toISOString() })
-      .where(eq(schema.fabrics.id, line.fabricId));
+      .where(eq(schema.fabrics.id, fabricId));
 
-    changes[`${line.fabricName} (${line.fabricSku})`] = { from, to };
+    changes[`${line.fabricName} (${line.fabricSku ?? "без SKU"})`] = { from, to };
   }
 
   await db
@@ -195,7 +207,7 @@ async function receivePurchase(formData: FormData) {
 
   revalidatePath("/purchases");
   revalidatePath("/fabrics");
-  redirect("/purchases?ok=received");
+  redirect(`/purchases?ok=received${skipped > 0 ? `&skipped=${skipped}` : ""}`);
 }
 
 // ============================================================
@@ -205,12 +217,13 @@ async function receivePurchase(formData: FormData) {
 export default async function PurchasesPage({
   searchParams,
 }: {
-  searchParams: Promise<{ ok?: string; error?: string }>;
+  searchParams: Promise<{ ok?: string; error?: string; skipped?: string }>;
 }) {
   const user = await getCurrentUser();
   if (!user) redirect("/login");
 
   const flags = await searchParams;
+  const money = canSeeMoney(user);
 
   const purchases = await db
     .select({
@@ -243,14 +256,18 @@ export default async function PurchasesPage({
         .select({
           purchaseId: schema.fabricPurchaseLines.purchaseId,
           fabricId: schema.fabricPurchaseLines.fabricId,
+          draftName: schema.fabricPurchaseLines.draftName,
           metersNeeded: schema.fabricPurchaseLines.metersNeeded,
           metersOrdered: schema.fabricPurchaseLines.metersOrdered,
+          pricePerMeter: schema.fabricPurchaseLines.pricePerMeter,
+          currency: schema.fabricPurchaseLines.currency,
+          fxRateToThb: schema.fabricPurchaseLines.fxRateToThb,
           note: schema.fabricPurchaseLines.note,
           fabricName: schema.fabrics.name,
           fabricSku: schema.fabrics.sku,
         })
         .from(schema.fabricPurchaseLines)
-        .innerJoin(
+        .leftJoin(
           schema.fabrics,
           eq(schema.fabricPurchaseLines.fabricId, schema.fabrics.id),
         )
@@ -298,6 +315,9 @@ export default async function PurchasesPage({
       {flags.ok === "received" ? (
         <Callout tone="ok" title="Приход проведён">
           Метраж добавлен на выбранный склад тканей, пометка «ожидаем» снята.
+          {flags.skipped
+            ? ` Строк-черновиков (ткань ещё не в библиотеке) пропущено: ${flags.skipped} — заведите на них карточку ткани и внесите остаток вручную.`
+            : ""}
         </Callout>
       ) : null}
       {flags.ok === "cancelled" ? (
@@ -334,15 +354,19 @@ export default async function PurchasesPage({
               0,
             );
 
+            const totalCostThb = purchaseLines.reduce((s, l) => {
+              if (l.pricePerMeter == null || l.fxRateToThb == null) return s;
+              return s + (l.metersOrdered ?? l.metersNeeded) * l.pricePerMeter * l.fxRateToThb;
+            }, 0);
+
             const waText =
               `Здравствуйте! EVA MOON, заявка ${p.number}.\n` +
               purchaseLines
-                .map(
-                  (l) =>
-                    `• ${l.fabricName} (${l.fabricSku}) — ${formatMeters(
-                      l.metersOrdered ?? l.metersNeeded,
-                    )}`,
-                )
+                .map((l) => {
+                  const label = l.fabricName ?? l.draftName ?? "ткань";
+                  const sku = l.fabricSku ? ` (${l.fabricSku})` : "";
+                  return `• ${label}${sku} — ${formatMeters(l.metersOrdered ?? l.metersNeeded)}`;
+                })
                 .join("\n") +
               `\nПодтвердите, пожалуйста, наличие, цену за метр и срок поставки.`;
 
@@ -384,6 +408,11 @@ export default async function PurchasesPage({
                       Всего
                     </div>
                     <div className="figure text-lg">{formatMeters(totalMeters)}</div>
+                    {money && totalCostThb > 0 ? (
+                      <div className="mt-1 text-sm text-[var(--color-muted)]">
+                        <Money value={totalCostThb} />
+                      </div>
+                    ) : null}
                   </div>
                 </div>
 
@@ -399,29 +428,52 @@ export default async function PurchasesPage({
                           <Th>Ткань</Th>
                           <Th align="right">Нужно</Th>
                           <Th align="right">Заказано</Th>
+                          {money ? <Th align="right">Сумма</Th> : null}
                           <Th>Примечание</Th>
                         </tr>
                       </thead>
                       <tbody>
-                        {purchaseLines.map((l) => (
-                          <tr key={`${l.purchaseId}-${l.fabricId}`}>
-                            <Td>
-                              <Link href={`/fabrics/${l.fabricId}`}>
-                                {l.fabricName}
-                              </Link>
-                              <div className="text-xs text-[var(--color-muted)]">
-                                {l.fabricSku}
-                              </div>
-                            </Td>
-                            <Td align="right">{formatMeters(l.metersNeeded)}</Td>
-                            <Td align="right">
-                              {l.metersOrdered == null
-                                ? "—"
-                                : formatMeters(l.metersOrdered)}
-                            </Td>
-                            <Td>{l.note ?? "—"}</Td>
-                          </tr>
-                        ))}
+                        {purchaseLines.map((l, i) => {
+                          const meters = l.metersOrdered ?? l.metersNeeded;
+                          const lineTotalThb =
+                            l.pricePerMeter != null && l.fxRateToThb != null
+                              ? meters * l.pricePerMeter * l.fxRateToThb
+                              : null;
+                          return (
+                            <tr key={`${l.purchaseId}-${l.fabricId ?? l.draftName ?? i}`}>
+                              <Td>
+                                {l.fabricId ? (
+                                  <Link href={`/fabrics/${l.fabricId}`}>
+                                    {l.fabricName}
+                                  </Link>
+                                ) : (
+                                  <span>{l.draftName ?? "без названия"}</span>
+                                )}
+                                <div className="text-xs text-[var(--color-muted)]">
+                                  {l.fabricId
+                                    ? (l.fabricSku ?? "без SKU")
+                                    : "черновик — ещё не в библиотеке"}
+                                </div>
+                              </Td>
+                              <Td align="right">{formatMeters(l.metersNeeded)}</Td>
+                              <Td align="right">
+                                {l.metersOrdered == null
+                                  ? "—"
+                                  : formatMeters(l.metersOrdered)}
+                              </Td>
+                              {money ? (
+                                <Td align="right">
+                                  {lineTotalThb != null ? (
+                                    <Money value={lineTotalThb} />
+                                  ) : (
+                                    "—"
+                                  )}
+                                </Td>
+                              ) : null}
+                              <Td>{l.note ?? "—"}</Td>
+                            </tr>
+                          );
+                        })}
                       </tbody>
                     </Table>
                   )}

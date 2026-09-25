@@ -522,7 +522,7 @@ async function OrderBuilder({
                         {f.fabricName}
                       </a>
                       <div className="text-xs text-[var(--color-muted)]">
-                        {f.fabricSku}
+                        {f.fabricSku ?? "без SKU"}
                       </div>
                     </Td>
                     <Td align="right">{formatMeters(f.metersNeeded)}</Td>

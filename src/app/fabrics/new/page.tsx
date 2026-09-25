@@ -25,14 +25,16 @@ async function createFabric(formData: FormData) {
 
   const name = parseText(formData.get("name"));
   const sku = parseText(formData.get("sku"));
-  if (!name || !sku) redirect("/fabrics/new?error=required");
+  if (!name) redirect("/fabrics/new?error=required");
 
-  const duplicate = await db
-    .select({ id: schema.fabrics.id })
-    .from(schema.fabrics)
-    .where(eq(schema.fabrics.sku, sku))
-    .limit(1);
-  if (duplicate.length > 0) redirect("/fabrics/new?error=sku");
+  if (sku) {
+    const duplicate = await db
+      .select({ id: schema.fabrics.id })
+      .from(schema.fabrics)
+      .where(eq(schema.fabrics.sku, sku))
+      .limit(1);
+    if (duplicate.length > 0) redirect("/fabrics/new?error=sku");
+  }
 
   let photoUrl: string | null = null;
   try {
@@ -91,7 +93,7 @@ async function createFabric(formData: FormData) {
     action: "CREATE",
     entityType: "fabric",
     entityId: fabric.id,
-    entityName: `${fabric.name} (${fabric.sku})`,
+    entityName: fabric.sku ? `${fabric.name} (${fabric.sku})` : fabric.name,
     changes: {
       остатки: {
         from: null,
@@ -105,7 +107,7 @@ async function createFabric(formData: FormData) {
 }
 
 const ERRORS: Record<string, string> = {
-  required: "Название и SKU обязательны",
+  required: "Укажите название ткани",
   sku: "Ткань с таким SKU уже есть — откройте её карточку или выберите другой SKU",
   photo: "Фото не сохранилось: поддерживаются JPG, PNG, WEBP и GIF до 25 МБ",
 };

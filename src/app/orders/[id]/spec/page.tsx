@@ -250,7 +250,7 @@ export default async function OrderSpecPage({
                     {r.color ? ` (${r.color})` : ""}
                   </td>
                   <td className="border-b border-[#F0EBE0] px-2 py-1.5 text-xs text-[#5C7278]">
-                    {r.fabricSku}
+                    {r.fabricSku ?? "без SKU"}
                   </td>
                   <td
                     className="border-b border-[#F0EBE0] px-2 py-1.5 text-right font-semibold"

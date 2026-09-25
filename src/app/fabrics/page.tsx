@@ -70,7 +70,7 @@ export default async function FabricsPage({
     ? rows.filter(
         (f) =>
           f.name.toLowerCase().includes(needle) ||
-          f.sku.toLowerCase().includes(needle) ||
+          (f.sku ?? "").toLowerCase().includes(needle) ||
           (f.color ?? "").toLowerCase().includes(needle) ||
           (f.composition ?? "").toLowerCase().includes(needle),
       )
@@ -190,8 +190,7 @@ export default async function FabricsPage({
                           {f.name}
                         </Link>
                         <div className="text-xs text-[var(--color-muted)]">
-                          {f.sku}
-                          {f.supplierName ? ` · ${f.supplierName}` : ""}
+                          {[f.sku, f.supplierName].filter(Boolean).join(" · ") || "—"}
                         </div>
                       </div>
                     </div>

@@ -80,7 +80,11 @@ async function fabricLabel(fabricId: string): Promise<string> {
     .from(schema.fabrics)
     .where(eq(schema.fabrics.id, fabricId))
     .limit(1);
-  return rows[0] ? `${rows[0].name} (${rows[0].sku})` : fabricId;
+  return rows[0]
+    ? rows[0].sku
+      ? `${rows[0].name} (${rows[0].sku})`
+      : rows[0].name
+    : fabricId;
 }
 
 async function warehouseName(warehouseId: string): Promise<string> {
@@ -178,7 +182,10 @@ async function addLot(formData: FormData) {
 
   // Номер рулона продолжаем от максимального уже занятого — так код не
   // повторится, даже если старые рулоны удалили из базы.
-  const prefix = `LOT-${fabric.sku}-`;
+  // Ткани без SKU получают префикс от id — иначе несколько таких тканей
+  // делили бы один и тот же ряд номеров LOT-undefined-*.
+  const skuPart = fabric.sku ?? fabricId.slice(0, 8).toUpperCase();
+  const prefix = `LOT-${skuPart}-`;
   const taken = await db
     .select({ lotCode: schema.fabricLots.lotCode })
     .from(schema.fabricLots)
@@ -353,7 +360,7 @@ export default async function FabricPage({
 
   const waText =
     `Здравствуйте! EVA MOON.\n` +
-    `Нужна ткань: ${fabric.name} (${fabric.sku})` +
+    `Нужна ткань: ${fabric.name}${fabric.sku ? ` (${fabric.sku})` : ""}` +
     (fabric.color ? `, цвет ${fabric.color}` : "") +
     (fabric.widthCm ? `, ширина ${fabric.widthCm} см` : "") +
     `.\nПодскажите, пожалуйста, наличие, цену за метр и срок поставки.`;
@@ -362,9 +369,9 @@ export default async function FabricPage({
     <>
       <PageHeader
         title={fabric.name}
-        subtitle={`${fabric.sku}${fabric.color ? ` · ${fabric.color}` : ""}${
-          fabric.composition ? ` · ${fabric.composition}` : ""
-        }`}
+        subtitle={[fabric.sku, fabric.color, fabric.composition]
+          .filter(Boolean)
+          .join(" · ")}
         action={
           <div className="flex flex-wrap gap-2">
             <LinkButton href={`/fabrics/${id}/qr`}>Печать QR</LinkButton>

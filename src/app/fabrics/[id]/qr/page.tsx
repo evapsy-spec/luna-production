@@ -94,8 +94,9 @@ export default async function FabricQrPage({
         <div>
           <h1 className="m-0 text-2xl">QR-метки</h1>
           <p className="mt-1 mb-0 text-sm text-[var(--color-muted)]">
-            {fabric.name} · {fabric.sku} — метка ткани и по одной на каждый
-            рулон. Ссылка ведёт на карточку ткани в Luna.
+            {fabric.name}
+            {fabric.sku ? ` · ${fabric.sku}` : ""} — метка ткани и по одной на
+            каждый рулон. Ссылка ведёт на карточку ткани в Luna.
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -107,11 +108,11 @@ export default async function FabricQrPage({
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
         <div className="label rounded-lg border border-[var(--color-line)] bg-white p-3 text-center">
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src={fabricQr} alt={`QR ${fabric.sku}`} className="mx-auto w-full max-w-[150px]" />
+          <img src={fabricQr} alt={`QR ${fabric.sku ?? fabric.name}`} className="mx-auto w-full max-w-[150px]" />
           <div className="mt-2 text-sm font-semibold text-[var(--color-ocean)]">
             {fabric.name}
           </div>
-          <div className="text-xs text-[var(--color-muted)]">{fabric.sku}</div>
+          <div className="text-xs text-[var(--color-muted)]">{fabric.sku ?? "без SKU"}</div>
           <div className="text-xs text-[var(--color-muted)]">
             {fabric.color ?? "—"}
             {fabric.widthCm ? ` · ${fabric.widthCm} см` : ""}
@@ -135,7 +136,7 @@ export default async function FabricQrPage({
             <div className="mt-2 text-sm font-semibold text-[var(--color-ocean)]">
               {fabric.name}
             </div>
-            <div className="text-xs text-[var(--color-muted)]">{fabric.sku}</div>
+            <div className="text-xs text-[var(--color-muted)]">{fabric.sku ?? "без SKU"}</div>
             <div className="text-xs font-medium">{lot.lotCode}</div>
             <div className="text-xs text-[var(--color-muted)]">
               {formatMeters(lot.lengthM)} · осталось {formatMeters(lot.remainingM)}

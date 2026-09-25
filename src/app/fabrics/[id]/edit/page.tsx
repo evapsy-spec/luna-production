@@ -22,19 +22,21 @@ async function updateFabric(formData: FormData) {
   const name = parseText(formData.get("name"));
   const sku = parseText(formData.get("sku"));
   if (!id) redirect("/fabrics");
-  if (!name || !sku) redirect(`/fabrics/${id}/edit?error=required`);
+  if (!name) redirect(`/fabrics/${id}/edit?error=required`);
 
   const before = (
     await db.select().from(schema.fabrics).where(eq(schema.fabrics.id, id)).limit(1)
   )[0];
   if (!before) redirect("/fabrics");
 
-  const duplicate = await db
-    .select({ id: schema.fabrics.id })
-    .from(schema.fabrics)
-    .where(and(eq(schema.fabrics.sku, sku), ne(schema.fabrics.id, id)))
-    .limit(1);
-  if (duplicate.length > 0) redirect(`/fabrics/${id}/edit?error=sku`);
+  if (sku) {
+    const duplicate = await db
+      .select({ id: schema.fabrics.id })
+      .from(schema.fabrics)
+      .where(and(eq(schema.fabrics.sku, sku), ne(schema.fabrics.id, id)))
+      .limit(1);
+    if (duplicate.length > 0) redirect(`/fabrics/${id}/edit?error=sku`);
+  }
 
   let photoUrl = before.photoUrl;
   try {
@@ -97,7 +99,7 @@ async function updateFabric(formData: FormData) {
 }
 
 const ERRORS: Record<string, string> = {
-  required: "Название и SKU обязательны",
+  required: "Укажите название ткани",
   sku: "Такой SKU уже занят другой тканью",
   photo: "Фото не сохранилось: поддерживаются JPG, PNG, WEBP и GIF до 25 МБ",
 };
@@ -133,7 +135,7 @@ export default async function EditFabricPage({
     <>
       <PageHeader
         title="Редактирование ткани"
-        subtitle={`${fabric.name} · ${fabric.sku}`}
+        subtitle={fabric.sku ? `${fabric.name} · ${fabric.sku}` : fabric.name}
         action={
           <LinkButton href={`/fabrics/${id}`}>Назад к карточке</LinkButton>
         }

@@ -105,7 +105,7 @@ export const fabrics = sqliteTable(
   "fabrics",
   {
     id: id(),
-    sku: text("sku").notNull().unique(),
+    sku: text("sku").unique(),
     name: text("name").notNull(),
     composition: text("composition"),
     color: text("color"),
@@ -240,11 +240,18 @@ export const fabricPurchaseLines = sqliteTable("fabric_purchase_lines", {
   purchaseId: text("purchase_id")
     .notNull()
     .references(() => fabricPurchases.id, { onDelete: "cascade" }),
-  fabricId: text("fabric_id")
-    .notNull()
-    .references(() => fabrics.id, { onDelete: "cascade" }),
+  /** пусто, если строка — черновик новой ткани, см. draftName */
+  fabricId: text("fabric_id").references(() => fabrics.id, {
+    onDelete: "cascade",
+  }),
+  /** название ткани, которой ещё нет в библиотеке — заполнено, когда fabricId пуст */
+  draftName: text("draft_name"),
   metersNeeded: real("meters_needed").notNull(),
   metersOrdered: real("meters_ordered"),
+  /** ориентировочная цена за метр именно для этой заявки — цены меняются со временем */
+  pricePerMeter: real("price_per_meter"),
+  currency: text("currency"),
+  fxRateToThb: real("fx_rate_to_thb"),
   note: text("note"),
 });
 

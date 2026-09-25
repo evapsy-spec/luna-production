@@ -39,7 +39,7 @@ export interface OrderLineInput {
 
 export interface FabricRequirement {
   fabricId: string;
-  fabricSku: string;
+  fabricSku: string | null;
   fabricName: string;
   /** метров нужно с учётом припуска на раскрой */
   metersNeeded: number;
@@ -176,7 +176,7 @@ export async function calculateOrder(
     string,
     {
       fabricId: string;
-      fabricSku: string;
+      fabricSku: string | null;
       fabricName: string;
       metersNeeded: number;
       costPerMeterThb: number;

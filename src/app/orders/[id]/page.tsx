@@ -581,7 +581,7 @@ export default async function OrderPage({
                     {r.fabricName}
                   </a>
                   <div className="text-xs text-[var(--color-muted)]">
-                    {r.fabricSku}
+                    {r.fabricSku ?? "без SKU"}
                   </div>
                 </Td>
                 <Td>{r.warehouseName ?? "—"}</Td>

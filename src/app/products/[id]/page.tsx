@@ -1028,7 +1028,7 @@ export default async function ProductPage({
                   <Td>
                     <Link href={`/fabrics/${l.fabricId}`}>{l.fabricName}</Link>
                     <div className="text-xs text-[var(--color-muted)]">
-                      {l.fabricSku}
+                      {l.fabricSku ?? "без SKU"}
                     </div>
                   </Td>
                   <Td align="right">{l.line.metersPerUnit}</Td>
