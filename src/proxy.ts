@@ -65,5 +65,13 @@ export default function proxy(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"],
+  // /uploads и /icons — статика из public/, ей middleware вообще не нужен:
+  // достаточно PUBLIC_ASSET_PREFIXES ниже по коду, но крупные файлы (фото
+  // тканей/изделий в несколько мегабайт) через Edge-рантайм middleware на
+  // самохостинге отдавались через раз с 404 — сам файл на диске был цел,
+  // но запрос до статического сервера Next даже не добирался. Раз эти пути
+  // и так всегда публичные, лучше не пропускать их через middleware вовсе.
+  matcher: [
+    "/((?!_next/static|_next/image|favicon.ico|uploads/|icons/).*)",
+  ],
 };
