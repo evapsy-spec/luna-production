@@ -9,7 +9,13 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
-const UPLOAD_ROOT = join(process.cwd(), "public", "uploads");
+// В продакшене задаём UPLOADS_DIR — храним файлы вне папки приложения,
+// как и базу (см. DATABASE_FILE): так их не затронет `git reset --hard`
+// при деплое, и не нужно перезапускать сервис, чтобы Next.js увидел новый
+// файл (см. комментарий в src/app/uploads/[...path]/route.ts).
+// Без переменной — как раньше, public/uploads (для разработки).
+const UPLOAD_ROOT =
+  process.env.UPLOADS_DIR || join(process.cwd(), "public", "uploads");
 
 /** Разрешаем только то, чем реально пользуются: картинки и файлы лекал */
 const ALLOWED_MIME = new Set([
