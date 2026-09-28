@@ -848,6 +848,36 @@ export const replenishPlan = sqliteTable("replenish_plan", {
     .$defaultFn(() => new Date().toISOString()),
 });
 
+/**
+ * Рекомендации «Перемещений», которые Ева пометила неактуальными — по
+ * конкретному направлению (см. @/lib/transfer-routes: RouteKey), а не
+ * навсегда для товара — тот же SKU может быть вполне актуален в обратную
+ * сторону. variantId — БЕЗ внешнего ключа: сюда попадают id и из
+ * product_variants (свои товары), и из other_brand_variants (чужие
+ * бренды) — это два разных пространства id, общего родителя у них нет.
+ *
+ * Живёт отдельно от replenish_plan: там решение относится к товару целиком
+ * («больше не шьём»), здесь — к одной рекомендации на одной вкладке
+ * («сейчас переставлять не нужно», при этом Phuket→Phangan для этого же
+ * SKU может остаться актуальным).
+ */
+export const transferDismissals = sqliteTable(
+  "transfer_dismissals",
+  {
+    id: id(),
+    variantId: text("variant_id").notNull(),
+    /** RouteKey из @/lib/transfer-routes: fotesko-phuket | phuket-phangan | phangan-phuket */
+    route: text("route").notNull(),
+    dismissedById: text("dismissed_by_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    dismissedAt: text("dismissed_at")
+      .notNull()
+      .$defaultFn(() => new Date().toISOString()),
+  },
+  (t) => [uniqueIndex("transfer_dismissals_uq").on(t.variantId, t.route)],
+);
+
 export const settings = sqliteTable("settings", {
   key: text("key").primaryKey(),
   value: text("value").notNull(),

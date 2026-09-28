@@ -82,6 +82,16 @@ export async function getTransferRecommendations(
   const phanganId = idByName.get(PHANGAN);
 
   const lastSync = await readLastSyncResult();
+
+  // «Неактуально» с конкретной вкладки (см. schema.transferDismissals) —
+  // ключ variantId|route, применяется один раз ниже, при сборке routes.
+  const dismissalRows = await db
+    .select({
+      variantId: schema.transferDismissals.variantId,
+      route: schema.transferDismissals.route,
+    })
+    .from(schema.transferDismissals);
+  const dismissedKeys = new Set(dismissalRows.map((d) => `${d.variantId}|${d.route}`));
   const empty: TransferResult = {
     routes: TRANSFER_ROUTES.map((route) => ({ route, rows: [] })),
     negativeIssues: [],
@@ -727,12 +737,16 @@ export async function getTransferRecommendations(
   for (const b of byOtherVariant.values()) collMap.set(`other:${b.brand}`, b.brand);
 
   const routes: RouteRows[] = TRANSFER_ROUTES.map((route) => {
-    const rows = applyFilters(rowsByRoute[route.key]).sort((a, c) => {
+    const notDismissed = rowsByRoute[route.key].filter(
+      (r) => !dismissedKeys.has(`${r.variantId}|${route.key}`),
+    );
+    const rows = applyFilters(notDismissed).sort((a, c) => {
       if (a.bucket !== c.bucket) {
         const order: Bucket[] = [
           "moveNow",
           "lowStock",
           "newArrivals",
+          "worthTrying",
           "needsPurchase",
           "unconfirmedDemand",
         ];

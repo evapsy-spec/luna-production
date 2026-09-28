@@ -60,22 +60,60 @@ const FOTESKO_NAME = "Fotesko Warehouse";
 const PHUKET_NAME = "Phuket";
 const PHANGAN_NAME = "Phangan";
 
-const BUCKET_ORDER: Bucket[] = ["moveNow", "lowStock", "newArrivals", "unconfirmedDemand"];
+const BUCKET_ORDER: Bucket[] = ["moveNow", "lowStock", "newArrivals", "worthTrying", "unconfirmedDemand"];
 
 function short(name: string): string {
   return SHORT_NAME[name] ?? name;
 }
 
-export function TransferTable({ rows: allRows }: { rows: TransferTableRow[] }) {
+export function TransferTable({
+  rows: allRows,
+  routeKey,
+  dismissAction,
+}: {
+  rows: TransferTableRow[];
+  /** RouteKey из @/lib/transfer-routes — одно и то же для всех строк, вся
+   * таблица всегда показывает ровно одну вкладку-направление. */
+  routeKey: string;
+  /** «Неактуально» — серверный экшен, вызывается напрямую (не через
+   * form), см. dismissTransferRow в page.tsx. */
+  dismissAction: (variantId: string, route: string) => Promise<void>;
+}) {
   const [selected, setSelected] = useState<Record<string, boolean>>({});
   const [qtyOverride, setQtyOverride] = useState<Record<string, number>>({});
   const [copied, setCopied] = useState(false);
+  // Скрыто прямо сейчас, в этом клиентском сеансе — до подтверждения с
+  // сервера строку прячем оптимистично, чтобы клик не ждал круговой рейс.
+  const [dismissed, setDismissed] = useState<Set<string>>(new Set());
+  const [dismissing, setDismissing] = useState<Set<string>>(new Set());
+
+  async function handleDismiss(r: TransferTableRow) {
+    setDismissed((prev) => new Set(prev).add(r.variantId));
+    setDismissing((prev) => new Set(prev).add(r.variantId));
+    try {
+      await dismissAction(r.variantId, routeKey);
+    } catch {
+      // не сохранилось на сервере — возвращаем строку, чтобы не потерять её молча
+      setDismissed((prev) => {
+        const next = new Set(prev);
+        next.delete(r.variantId);
+        return next;
+      });
+    } finally {
+      setDismissing((prev) => {
+        const next = new Set(prev);
+        next.delete(r.variantId);
+        return next;
+      });
+    }
+  }
 
   // «Нужна закупка — перемещать нечего» на этой странице не показываем
-  // (см. комментарий вверху файла).
+  // (см. комментарий вверху файла) — и то, что только что скрыли кнопкой
+  // «Неактуально».
   const rows = useMemo(
-    () => allRows.filter((r) => r.bucket !== "needsPurchase"),
-    [allRows],
+    () => allRows.filter((r) => r.bucket !== "needsPurchase" && !dismissed.has(r.variantId)),
+    [allRows, dismissed],
   );
 
   // Склады текущего маршрута — берём из любой строки исходных данных (на
@@ -208,6 +246,8 @@ export function TransferTable({ rows: allRows }: { rows: TransferTableRow[] }) {
                     showPhuket={showPhuket}
                     showPhangan={showPhangan}
                     combineThailand={combineThailand}
+                    onDismiss={handleDismiss}
+                    dismissing={dismissing}
                   />
                 );
               })}
@@ -238,6 +278,8 @@ function BucketGroup({
   showPhuket,
   showPhangan,
   combineThailand,
+  onDismiss,
+  dismissing,
 }: {
   bucket: Bucket;
   rows: TransferTableRow[];
@@ -249,8 +291,12 @@ function BucketGroup({
   showPhuket: boolean;
   showPhangan: boolean;
   combineThailand: boolean;
+  onDismiss: (r: TransferTableRow) => void;
+  dismissing: Set<string>;
 }) {
-  const collapsedByDefault = bucket === "unconfirmedDemand";
+  // «Стоит перераспределить» и «Без подтверждённого спроса» — обе менее
+  // срочные, сворачиваем по умолчанию, чтобы не спорили с реальными «Переместить сейчас».
+  const collapsedByDefault = bucket === "unconfirmedDemand" || bucket === "worthTrying";
   return (
     <details open={!collapsedByDefault} className="rounded-lg border border-[var(--color-line)]">
       <summary className="touch cursor-pointer list-none px-3 py-2 text-xs font-semibold uppercase tracking-wide text-[var(--color-muted)]">
@@ -289,6 +335,7 @@ function BucketGroup({
               <th className="px-2 py-2">Посл. продажа</th>
               <th className="px-2 py-2 text-right">Везём</th>
               <th className="px-2 py-2">Причина</th>
+              <th className="px-2 py-2"></th>
             </tr>
           </thead>
           <tbody>
@@ -365,6 +412,16 @@ function BucketGroup({
                       <StatusPill tone="serious">Перенос последней единицы</StatusPill>
                     </span>
                   ) : null}
+                </td>
+                <td className="px-2 py-2 text-right">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    disabled={dismissing.has(r.variantId)}
+                    onClick={() => onDismiss(r)}
+                  >
+                    Неактуально
+                  </Button>
                 </td>
               </tr>
             ))}

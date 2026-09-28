@@ -139,6 +139,17 @@ export const REASONS = {
   NEW_ARRIVAL: "Новое поступление",
   NOT_SOLD_AT_SOURCE: "Не продаётся на складе-источнике",
   NEEDS_PURCHASE: "Недостаточно общего остатка — нужна закупка",
+  /**
+   * Ева, 2026-09-28, про Жаккард Бралет Deep Ocean (M): «продаж не было
+   * на Пхукете» — не то же самое, что «спроса не было», если там просто
+   * не было этого размера. На двоих остатка хватает (source.available +
+   * dest.available ≥ sourceTarget + destTarget) — это не заявка на
+   * закупку, весь остаток просто лежит на источнике, который хочет
+   * оставить его себе. Решать, дробить ли источник ниже его целевого
+   * запаса, — на усмотрение Евы, поэтому отдельным, менее срочным
+   * бакетом (см. Bucket ниже), а не молча в «нужна закупка».
+   */
+  SPLIT_POSSIBLE: "Остаток есть, но весь на {source} — {dest} не пробовали",
 } as const;
 
 export type ReasonCode = keyof typeof REASONS;
@@ -156,6 +167,7 @@ export type Bucket =
   | "moveNow"
   | "lowStock"
   | "newArrivals"
+  | "worthTrying"
   | "needsPurchase"
   | "unconfirmedDemand";
 
@@ -163,6 +175,8 @@ export const BUCKET_LABELS: Record<Bucket, string> = {
   moveNow: "Переместить сейчас",
   lowStock: "Низкий остаток",
   newArrivals: "Новые поступления",
+  /** См. SPLIT_POSSIBLE выше — отдельная, менее срочная категория. */
+  worthTrying: "Стоит перераспределить",
   needsPurchase: "Нужна закупка — перемещать нечего",
   unconfirmedDemand: "Без подтверждённого спроса",
 };
@@ -373,6 +387,24 @@ export function evaluateBoutiqueLeg(input: BoutiqueLegInput): BoutiqueLegResult 
 
   const spare = Math.max(0, source.available - sourceTarget);
   if (spare <= 0) {
+    // У источника физически хватает единиц, чтобы полностью закрыть need
+    // получателя (source.available >= need) — просто это заберёт часть
+    // его СОБСТВЕННОГО целевого запаса. Это НЕ «нечего перемещать, нужна
+    // закупка» в смысле нехватки товара — товар есть, вопрос только в
+    // перераспределении. Показываем отдельной, менее срочной
+    // рекомендацией (см. REASONS.SPLIT_POSSIBLE): дробить ли источник
+    // ниже его цели — решение человека, не алгоритма. «Нужна закупка» —
+    // только когда даже отдав источник целиком, получателю всё равно не
+    // хватит (source.available < need).
+    if (source.available >= need) {
+      return {
+        ...base,
+        sendQty: Math.min(need, source.available),
+        lastUnitWarning: false,
+        bucket: "worthTrying",
+        reason: "SPLIT_POSSIBLE",
+      };
+    }
     return {
       ...base,
       sendQty: 0,

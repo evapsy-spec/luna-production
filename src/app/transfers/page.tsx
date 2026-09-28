@@ -7,6 +7,8 @@
  */
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
+import { and, eq, inArray } from "drizzle-orm";
+import { db, schema } from "@/lib/db/client";
 import { requireUser, writeAudit } from "@/lib/auth";
 import { syncAll } from "@/lib/ainur/sync";
 import { saveLastSyncResult } from "@/lib/ainur/last-result";
@@ -21,6 +23,7 @@ import {
   TRANSFER_ROUTES,
   type AnalysisPeriod,
 } from "@/lib/transfers";
+import { routeByKey, type RouteKey } from "@/lib/transfer-routes";
 import {
   Card,
   PageHeader,
@@ -95,6 +98,91 @@ async function refreshData() {
   redirect("/transfers?ran=1");
 }
 
+/**
+ * «Неактуально» на конкретной вкладке — не форма, вызывается прямо из
+ * клиентского компонента таблицы (см. transfer-table.tsx) с обычными
+ * аргументами, а не FormData. Поэтому без redirect() — иначе клиент
+ * потерял бы состояние (выбранные строки, введённые количества) при
+ * каждом клике. revalidatePath хватает: следующая загрузка страницы
+ * (обновление, смена вкладки, «Обновить данные») эту строку уже не пришлёт.
+ */
+async function dismissTransferRow(variantId: string, route: string) {
+  "use server";
+  const actor = await requireUser();
+
+  const [ownVariant] = await db
+    .select({ sku: schema.productVariants.sku })
+    .from(schema.productVariants)
+    .where(eq(schema.productVariants.id, variantId))
+    .limit(1);
+  const [otherVariant] = ownVariant
+    ? []
+    : await db
+        .select({ sku: schema.otherBrandVariants.sku })
+        .from(schema.otherBrandVariants)
+        .where(eq(schema.otherBrandVariants.id, variantId))
+        .limit(1);
+  const sku = ownVariant?.sku ?? otherVariant?.sku ?? variantId;
+
+  await db
+    .insert(schema.transferDismissals)
+    .values({ variantId, route, dismissedById: actor.id })
+    .onConflictDoUpdate({
+      target: [schema.transferDismissals.variantId, schema.transferDismissals.route],
+      set: { dismissedById: actor.id, dismissedAt: new Date().toISOString() },
+    });
+
+  await writeAudit(actor, {
+    action: "UPDATE",
+    entityType: "TransferDismissal",
+    entityId: variantId,
+    entityName: `${sku}: скрыто на «${routeByKey(route).label}»`,
+  });
+  revalidatePath("/transfers");
+}
+
+/** Вернуть ранее скрытую рекомендацию — из блока «Скрытые на этой вкладке». */
+async function restoreTransferRow(formData: FormData) {
+  "use server";
+  const actor = await requireUser();
+  const variantId = String(formData.get("variantId") ?? "");
+  const route = String(formData.get("route") ?? "") as RouteKey;
+  const back = String(formData.get("back") ?? "");
+  if (!variantId || !route) redirect(`/transfers${back}`);
+
+  const [ownVariant] = await db
+    .select({ sku: schema.productVariants.sku })
+    .from(schema.productVariants)
+    .where(eq(schema.productVariants.id, variantId))
+    .limit(1);
+  const [otherVariant] = ownVariant
+    ? []
+    : await db
+        .select({ sku: schema.otherBrandVariants.sku })
+        .from(schema.otherBrandVariants)
+        .where(eq(schema.otherBrandVariants.id, variantId))
+        .limit(1);
+  const sku = ownVariant?.sku ?? otherVariant?.sku ?? variantId;
+
+  await db
+    .delete(schema.transferDismissals)
+    .where(
+      and(
+        eq(schema.transferDismissals.variantId, variantId),
+        eq(schema.transferDismissals.route, route),
+      ),
+    );
+
+  await writeAudit(actor, {
+    action: "UPDATE",
+    entityType: "TransferDismissal",
+    entityId: variantId,
+    entityName: `${sku}: возвращено на «${routeByKey(route).label}»`,
+  });
+  revalidatePath("/transfers");
+  redirect(`/transfers${back}`);
+}
+
 export default async function TransfersPage({
   searchParams,
 }: {
@@ -120,6 +208,51 @@ export default async function TransfersPage({
     (params.route && TRANSFER_ROUTES.find((r) => r.key === params.route)?.key) ||
     TRANSFER_ROUTES[0].key;
   const activeRoute = data.routes.find((r) => r.route.key === activeKey) ?? data.routes[0];
+
+  // ---------- скрытые («неактуально») рекомендации этой же вкладки ----------
+  const dismissedForRoute = await db
+    .select({
+      variantId: schema.transferDismissals.variantId,
+      dismissedAt: schema.transferDismissals.dismissedAt,
+    })
+    .from(schema.transferDismissals)
+    .where(eq(schema.transferDismissals.route, activeKey));
+
+  let hiddenRows: { variantId: string; sku: string; productName: string; dismissedAt: string }[] = [];
+  if (dismissedForRoute.length > 0) {
+    const ids = dismissedForRoute.map((d) => d.variantId);
+    const [ownRows, otherRows] = await Promise.all([
+      db
+        .select({
+          id: schema.productVariants.id,
+          sku: schema.productVariants.sku,
+          name: schema.products.name,
+        })
+        .from(schema.productVariants)
+        .innerJoin(schema.products, eq(schema.productVariants.productId, schema.products.id))
+        .where(inArray(schema.productVariants.id, ids)),
+      db
+        .select({
+          id: schema.otherBrandVariants.id,
+          sku: schema.otherBrandVariants.sku,
+          name: schema.otherBrandVariants.modelName,
+        })
+        .from(schema.otherBrandVariants)
+        .where(inArray(schema.otherBrandVariants.id, ids)),
+    ]);
+    const labelById = new Map<string, { sku: string; name: string }>();
+    for (const r of ownRows) labelById.set(r.id, { sku: r.sku, name: r.name });
+    for (const r of otherRows) if (!labelById.has(r.id)) labelById.set(r.id, { sku: r.sku, name: r.name });
+    hiddenRows = dismissedForRoute.map((d) => {
+      const label = labelById.get(d.variantId);
+      return {
+        variantId: d.variantId,
+        sku: label?.sku ?? d.variantId,
+        productName: label?.name ?? "—",
+        dismissedAt: d.dismissedAt,
+      };
+    });
+  }
 
   // Хвост фильтров, чтобы переключение вкладки не сбрасывало фильтры
   const tail = new URLSearchParams();
@@ -261,8 +394,44 @@ export default async function TransfersPage({
           action={<LinkButton href={`/transfers?route=${activeKey}`}>Сбросить фильтры</LinkButton>}
         />
       ) : (
-        <TransferTable rows={activeRoute.rows} />
+        <TransferTable
+          rows={activeRoute.rows}
+          routeKey={activeKey}
+          dismissAction={dismissTransferRow}
+        />
       )}
+
+      {hiddenRows.length > 0 ? (
+        <details className="mt-4 rounded-lg border border-[var(--color-line)]">
+          <summary className="touch cursor-pointer list-none px-3 py-2 text-xs font-semibold uppercase tracking-wide text-[var(--color-muted)]">
+            Скрытые на «{activeRoute.route.label}» · {hiddenRows.length}
+          </summary>
+          <ul className="space-y-2 p-3 text-sm">
+            {hiddenRows.map((h) => (
+              <li
+                key={h.variantId}
+                className="flex flex-wrap items-center justify-between gap-2 border-b border-[var(--color-line)] pb-2 last:border-0 last:pb-0"
+              >
+                <span>
+                  <span className="font-medium text-[var(--color-ocean)]">{h.sku}</span>{" "}
+                  <span className="text-[var(--color-muted)]">{h.productName}</span>
+                  <span className="ml-2 text-xs text-[var(--color-faint)]">
+                    скрыто {formatDateTime(h.dismissedAt)}
+                  </span>
+                </span>
+                <form action={restoreTransferRow}>
+                  <input type="hidden" name="variantId" value={h.variantId} />
+                  <input type="hidden" name="route" value={activeKey} />
+                  <input type="hidden" name="back" value={`?route=${activeKey}${tailStr}`} />
+                  <Button type="submit" variant="ghost">
+                    Вернуть
+                  </Button>
+                </form>
+              </li>
+            ))}
+          </ul>
+        </details>
+      ) : null}
 
       <p className="mt-4 text-xs text-[var(--color-faint)]">
         Это рекомендация, не факт перемещения — сам перевоз и списание/приход

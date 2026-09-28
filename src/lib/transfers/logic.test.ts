@@ -243,6 +243,28 @@ test("Панган → Пхукет: модель проверена на Пан
   assert.equal(r!.destTarget, 5);
 });
 
+test("Панган → Пхукет: весь остаток на Пангане нужен ему самому, но физически хватает и Пхукету — «стоит перераспределить», не «нужна закупка»", () => {
+  // Ева, 2026-09-28, про Жаккард Бралет Deep Ocean (M): на Пангане 2 шт,
+  // на Пхукете 0, этот размер там ещё не пробовали. «Продаж не было» —
+  // не то же самое, что «спроса не было»: Панган держит свои 2 шт под
+  // собственный целевой запас (sourceTarget=2, раз сам продаёт), поэтому
+  // spare=0 — но у источника физически хватает единиц на need получателя,
+  // так что это не дефицит, а вопрос перераспределения.
+  const r = evaluateBoutiqueLeg({
+    sourceRawQty: 2,
+    destRawQty: 0,
+    sourceSales: { sold90d: 0, sold12m: 2, lastSaleAt: "2026-08-01" },
+    destSales: { sold90d: 0, sold12m: 0, lastSaleAt: null },
+    isNew: false,
+  });
+  assert.ok(r);
+  assert.equal(r!.sourceTarget, 2);
+  assert.equal(r!.destTarget, 1); // деление 2/2 пополам между источником и получателем
+  assert.equal(r!.bucket, "worthTrying");
+  assert.equal(r!.reason, "SPLIT_POSSIBLE");
+  assert.ok(r!.sendQty > 0);
+});
+
 test("отрицательный остаток на источнике — не считается доступным, а не даёт отрицательную рекомендацию", () => {
   const r = evaluateBoutiqueLeg({
     sourceRawQty: -1,
