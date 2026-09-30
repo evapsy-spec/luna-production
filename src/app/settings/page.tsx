@@ -36,6 +36,7 @@ const MESSAGES: Record<string, string> = {
   user_toggled: "Доступ обновлён",
   settings_saved: "Параметры расчётов сохранены",
   warehouse_created: "Склад тканей добавлен",
+  warehouse_toggled: "Статус склада обновлён",
 };
 
 const ERRORS: Record<string, string> = {
@@ -242,6 +243,46 @@ async function addFabricWarehouse(formData: FormData) {
   redirect("/settings?msg=warehouse_created");
 }
 
+/**
+ * Отключить/включить склад тканей — не удаляем: у отключённого склада
+ * остаток и история (лоты, движения) остаются видны на карточке ткани,
+ * он просто пропадает из выбора при добавлении новой ткани и при
+ * поступлении/списании остатка (см. фильтр isActive в
+ * src/app/fabrics/new/page.tsx и src/app/fabrics/[id]/page.tsx).
+ * Ева, 2026-09-30: склад «Панган» для тканей больше не существует
+ * физически (сейчас Китай и Бали), но менять его — не наше дело, если
+ * там ещё числится остаток.
+ */
+async function toggleWarehouse(formData: FormData) {
+  "use server";
+  const owner = await requireOwner();
+
+  const warehouseId = String(formData.get("warehouseId") ?? "");
+  if (!warehouseId) redirect("/settings?error=fields");
+
+  const target = (
+    await db.select().from(schema.warehouses).where(eq(schema.warehouses.id, warehouseId)).limit(1)
+  )[0];
+  if (!target) redirect("/settings?error=fields");
+
+  const next = !target.isActive;
+  await db
+    .update(schema.warehouses)
+    .set({ isActive: next })
+    .where(eq(schema.warehouses.id, warehouseId));
+
+  await writeAudit(owner, {
+    action: "UPDATE",
+    entityType: "Warehouse",
+    entityId: warehouseId,
+    entityName: target.name,
+    changes: { isActive: { from: target.isActive, to: next } },
+  });
+
+  revalidatePath("/settings");
+  redirect("/settings?msg=warehouse_toggled");
+}
+
 export default async function SettingsPage({
   searchParams,
 }: {
@@ -434,6 +475,7 @@ export default async function SettingsPage({
               <Th>ID в Ainur</Th>
               <Th>Страна</Th>
               <Th>Статус</Th>
+              <Th> </Th>
             </tr>
           </thead>
           <tbody>
@@ -444,6 +486,7 @@ export default async function SettingsPage({
                     Складов пока нет
                   </span>
                 </Td>
+                <Td>—</Td>
                 <Td>—</Td>
                 <Td>—</Td>
                 <Td>—</Td>
@@ -468,6 +511,22 @@ export default async function SettingsPage({
                     <StatusPill tone={w.isActive ? "ok" : "neutral"}>
                       {w.isActive ? "активен" : "отключён"}
                     </StatusPill>
+                  </Td>
+                  <Td>
+                    {/* Только склады тканей — заводим их сами, значит и
+                     * отключаем сами. Склады готовой продукции приходят из
+                     * Ainur, их статусом мы отсюда не управляем. */}
+                    {w.kind === "FABRIC" ? (
+                      <form action={toggleWarehouse}>
+                        <input type="hidden" name="warehouseId" value={w.id} />
+                        <Button
+                          type="submit"
+                          variant={w.isActive ? "danger" : "secondary"}
+                        >
+                          {w.isActive ? "Отключить" : "Включить"}
+                        </Button>
+                      </form>
+                    ) : null}
                   </Td>
                 </tr>
               ))
