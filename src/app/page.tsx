@@ -27,7 +27,6 @@ import {
 } from "@/components/ui";
 import { BarChart, RankBars, CoverageBar } from "@/components/charts";
 import { DeadlinePill, getUnitsByOrder, isOverdue, plural } from "./orders/_shared";
-import { LowStockTable } from "./_low-stock";
 import { getUsaOverview, type UsaOverview } from "@/lib/usa-reorder";
 import { UsaCards } from "./_usa-cards";
 
@@ -347,11 +346,8 @@ export default async function DashboardPage() {
         </>
       ) : null}
 
-      {/* ---------- Пора заказывать: остатки на наших складах ---------- */}
-      <LowStockTable />
-
       {/* ---------- Продажи и запас ---------- */}
-      <SectionTitle>Продажи и запас</SectionTitle>
+      <SectionTitle>Продажи</SectionTitle>
       <div className="grid gap-4 lg:grid-cols-2">
         <Card>
           <div className="mb-3 text-sm font-medium text-[var(--color-ocean)]">
@@ -373,113 +369,6 @@ export default async function DashboardPage() {
           )}
         </Card>
 
-        <Card>
-          <div className="mb-3 text-sm font-medium text-[var(--color-ocean)]">
-            Заканчивается — стоит отшить
-          </div>
-          {running.length > 0 ? (
-            <div className="flex flex-col gap-2.5">
-              {running.map((v) => (
-                <div
-                  key={v.variantId}
-                  className="flex flex-wrap items-center justify-between gap-2"
-                >
-                  <div className="min-w-0">
-                    <a
-                      href={`/products/${v.productId}`}
-                      className="text-sm no-underline text-[var(--color-ink)] hover:underline active:underline"
-                    >
-                      {v.productName}
-                      {v.color ? ` · ${v.color}` : ""}
-                      {v.size ? ` · ${v.size}` : ""}
-                    </a>
-                    <div className="text-xs text-[var(--color-muted)]">
-                      {v.stockQty} шт на складе · {v.perMonth} шт/мес
-                    </div>
-                  </div>
-                  <CoverageBar months={v.monthsOfCover} target={OVERSTOCK_MONTHS} />
-                </div>
-              ))}
-              <div className="mt-1">
-                <LinkButton href="/orders/new" variant="primary">
-                  Создать заказ на пошив
-                </LinkButton>
-              </div>
-            </div>
-          ) : (
-            <p className="m-0 text-sm text-[var(--color-faint)]">
-              Ничего не заканчивается — запаса хватает по всем позициям.
-            </p>
-          )}
-        </Card>
-
-        <Card>
-          <div className="mb-1 text-sm font-medium text-[var(--color-ocean)]">
-            Лежит в избытке — кандидаты на скидку или акцию
-          </div>
-          <p className="mt-0 mb-3 text-xs text-[var(--color-muted)]">
-            Запас больше {OVERSTOCK_MONTHS} мес при текущей скорости продаж
-          </p>
-          {overstock.length > 0 ? (
-            <div className="flex flex-col gap-2.5">
-              {overstock.map((v) => (
-                <div
-                  key={v.variantId}
-                  className="flex flex-wrap items-center justify-between gap-2"
-                >
-                  <div className="min-w-0">
-                    <a
-                      href={`/products/${v.productId}`}
-                      className="text-sm no-underline text-[var(--color-ink)] hover:underline active:underline"
-                    >
-                      {v.productName}
-                      {v.color ? ` · ${v.color}` : ""}
-                      {v.size ? ` · ${v.size}` : ""}
-                    </a>
-                    <div className="text-xs text-[var(--color-muted)]">
-                      {v.stockQty} шт ·{" "}
-                      {v.perMonth > 0
-                        ? `${v.perMonth} шт/мес`
-                        : "продаж за 90 дней нет"}
-                    </div>
-                  </div>
-                  <CoverageBar months={v.monthsOfCover} target={OVERSTOCK_MONTHS} />
-                </div>
-              ))}
-            </div>
-          ) : (
-            <p className="m-0 text-sm text-[var(--color-faint)]">
-              Избытка нет — склад сбалансирован.
-            </p>
-          )}
-        </Card>
-
-        <Card>
-          <div className="mb-1 text-sm font-medium text-[var(--color-ocean)]">
-            Стоит переместить между складами
-          </div>
-          <p className="mt-0 mb-3 text-xs text-[var(--color-muted)]">
-            Где лежит без продаж — туда, где заканчивается
-          </p>
-          {transfers.length > 0 ? (
-            <div className="flex flex-col gap-3">
-              {transfers.slice(0, 5).map((t, i) => (
-                <div key={`${t.variantId}-${i}`} className="text-sm">
-                  <div>
-                    <b className="tnum">{t.quantity} шт</b> «{t.label}»
-                  </div>
-                  <div className="text-xs text-[var(--color-muted)]">
-                    {t.fromWarehouseName} → {t.toWarehouseName}: {t.reason}
-                  </div>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <p className="m-0 text-sm text-[var(--color-faint)]">
-              Перемещать нечего — товар лежит там, где продаётся.
-            </p>
-          )}
-        </Card>
       </div>
 
       {/* ---------- Производство по месяцам ---------- */}
@@ -598,37 +487,6 @@ export default async function DashboardPage() {
           </tbody>
         </Table>
       </Card>
-
-      {/* ---------- Рекомендация Luna ---------- */}
-      {recommendations.length > 0 ? (
-        <>
-          <SectionTitle>
-            Рекомендация Luna: что отшить на 3 месяца вперёд
-          </SectionTitle>
-          <Card>
-            <div className="flex flex-col gap-2.5">
-              {recommendations.slice(0, 6).map((r) => (
-                <div key={r.variantId} className="flex flex-wrap gap-2 text-sm">
-                  <b className="tnum shrink-0 text-[var(--color-gold-deep)]">
-                    {r.suggestedQty} шт
-                  </b>
-                  <span className="min-w-0">
-                    {r.label}
-                    <span className="block text-xs text-[var(--color-muted)]">
-                      {r.reason}
-                    </span>
-                  </span>
-                </div>
-              ))}
-            </div>
-            <div className="mt-4">
-              <LinkButton href="/orders/new" variant="primary">
-                Собрать заказ по рекомендации
-              </LinkButton>
-            </div>
-          </Card>
-        </>
-      ) : null}
 
       {/* ---------- Синхронизация ---------- */}
       <div className="mt-8 flex flex-wrap gap-x-6 gap-y-1 border-t border-[var(--color-line)] pt-4 text-xs text-[var(--color-muted)]">
