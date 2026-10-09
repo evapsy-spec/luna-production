@@ -93,7 +93,7 @@ export default async function OrdersPage({
     usaProgress = q > 0 ? Math.min(100, Math.round((pr / q) * 100)) : 0;
   }
 
-  const orderIds = all.map((o) => o.id);
+  const orderIds = allWithUsa.map((o) => o.id);
   const paidByOrder = await getPaidByOrder(orderIds);
   const unitsByOrder = await getUnitsByOrder(orderIds);
 
@@ -117,12 +117,16 @@ export default async function OrdersPage({
       return o.status === "SAMPLE" || o.status === "IN_PRODUCTION";
     return o.status === tab;
   });
-  const overdue = all.filter(isOverdue);
-  const unitsInWork = active.reduce((sum, o) => {
+  // цифры сверху считают все заказы, включая заказ Джонни для склада США
+  const activeAll = allWithUsa.filter(
+    (o) => o.status === "SAMPLE" || o.status === "IN_PRODUCTION",
+  );
+  const overdue = allWithUsa.filter(isOverdue);
+  const unitsInWork = activeAll.reduce((sum, o) => {
     const u = unitsByOrder.get(o.id);
     return sum + (u ? Math.max(0, u.quantity - u.produced) : 0);
   }, 0);
-  const activeBudget = active.reduce((s, o) => s + o.snapshotTotalCost, 0);
+  const activeBudget = activeAll.reduce((s, o) => s + o.snapshotTotalCost, 0);
 
   return (
     <>
@@ -139,10 +143,8 @@ export default async function OrdersPage({
         }
       />
 
-      {usa ? <UsaCards usa={usa} usaProgress={usaProgress} className="mb-6" /> : null}
-
       <div className="mb-6 grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <Stat label="Активных заказов" value={active.length} />
+        <Stat label="Активных заказов" value={activeAll.length} />
         <Stat
           label="В работе"
           value={`${unitsInWork} шт`}
@@ -159,6 +161,8 @@ export default async function OrdersPage({
           sub={overdue.length > 0 ? "нужно связаться с фабрикой" : "всё в срок"}
         />
       </div>
+
+      {usa ? <UsaCards usa={usa} usaProgress={usaProgress} className="mb-6" /> : null}
 
       {/* Фильтр по статусу */}
       <div className="mb-4 -mx-4 overflow-x-auto px-4">
