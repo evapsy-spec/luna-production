@@ -30,7 +30,6 @@ import { BarChart, RankBars, CoverageBar } from "@/components/charts";
 import { DeadlinePill, getUnitsByOrder, isOverdue, plural } from "./orders/_shared";
 import { LowStockTable } from "./_low-stock";
 import { getUsaOverview, type UsaOverview } from "@/lib/usa-reorder";
-import { isUsaOrderNote } from "@/lib/usa-reorder-rules";
 
 export const metadata = { title: "Luna Production — EVA MOON" };
 
@@ -42,7 +41,7 @@ export default async function DashboardPage() {
   const showMoney = canSeeMoney(user);
 
   // ---------- Заказы в производстве ----------
-  const ordersRaw = await db
+  const orders = await db
     .select({
       id: schema.productionOrders.id,
       number: schema.productionOrders.number,
@@ -51,7 +50,6 @@ export default async function DashboardPage() {
       actualReadyAt: schema.productionOrders.actualReadyAt,
       snapshotTotalCost: schema.productionOrders.snapshotTotalCost,
       createdAt: schema.productionOrders.createdAt,
-      note: schema.productionOrders.note,
       factoryName: schema.factories.name,
     })
     .from(schema.productionOrders)
@@ -60,8 +58,6 @@ export default async function DashboardPage() {
       eq(schema.productionOrders.factoryId, schema.factories.id),
     )
     .orderBy(desc(schema.productionOrders.createdAt));
-  // заказы для склада США не считаем как пошив: они в карточке «Склад США»
-  const orders = ordersRaw.filter((o) => !isUsaOrderNote(o.note));
 
   const activeOrders = orders.filter(
     (o) => o.status === "SAMPLE" || o.status === "IN_PRODUCTION",
