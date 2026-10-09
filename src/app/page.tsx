@@ -243,12 +243,11 @@ export default async function DashboardPage() {
           (Johnny). Бали, Украина, Китай добавятся такими же блоками. */}
       {usa ? (
         <>
-          <SectionTitle>Склад США · Johnny</SectionTitle>
-          <div className="grid gap-3 md:grid-cols-2">
+          <div className="mt-3 grid grid-cols-2 gap-3">
             <Card padded={false}>
               <a
                 href="/orders/usa"
-                className="block p-4 no-underline text-[var(--color-ink)] hover:bg-[var(--color-sand-warm)] sm:p-5"
+                className="block p-3 no-underline text-[var(--color-ink)] hover:bg-[var(--color-sand-warm)] sm:p-5"
               >
                 <div className="flex items-center gap-2 text-sm font-medium">
                   Активный заказ США
@@ -262,7 +261,7 @@ export default async function DashboardPage() {
                   </div>
                 ) : (
                   <>
-                    <div className="figure mt-2 text-3xl text-[var(--color-ink)]">
+                    <div className="figure mt-2 text-2xl text-[var(--color-ink)] sm:text-3xl">
                       № {usa.orders.map((o) => o.number.replace(/^PO-\d{4}-0*/, "")).join(", ")}
                       <span className="ml-2 text-base font-normal text-[var(--color-muted)]">
                         · {usa.totalUnitsInOrders} шт
@@ -292,7 +291,7 @@ export default async function DashboardPage() {
             <Card padded={false}>
               <a
                 href="/orders/usa"
-                className="block p-4 no-underline text-[var(--color-ink)] hover:bg-[var(--color-sand-warm)] sm:p-5"
+                className="block p-3 no-underline text-[var(--color-ink)] hover:bg-[var(--color-sand-warm)] sm:p-5"
               >
                 <div className="flex items-center gap-2 text-sm font-medium">
                   Склад США: что заказывать
@@ -301,7 +300,7 @@ export default async function DashboardPage() {
                   ) : null}
                 </div>
                 <div
-                  className={`figure mt-2 text-3xl ${
+                  className={`figure mt-2 text-2xl sm:text-3xl ${
                     usa.need.length > 0 ? "text-[#A82C2C]" : "text-[var(--color-ocean)]"
                   }`}
                 >
