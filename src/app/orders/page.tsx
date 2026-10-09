@@ -99,9 +99,12 @@ export default async function OrdersPage({
         title="Заказы на пошив"
         subtitle="Выберите фабрику — Luna посчитает расход тканей и бюджет"
         action={
-          <LinkButton href="/orders/new" variant="primary">
-            + Новый заказ
-          </LinkButton>
+          <div className="flex flex-wrap gap-2">
+            <LinkButton href="/orders/usa">Склад США</LinkButton>
+            <LinkButton href="/orders/new" variant="primary">
+              + Новый заказ
+            </LinkButton>
+          </div>
         }
       />
 

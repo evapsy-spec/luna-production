@@ -29,6 +29,7 @@ import {
 import { BarChart, RankBars, CoverageBar } from "@/components/charts";
 import { DeadlinePill, getUnitsByOrder, isOverdue, plural } from "./orders/_shared";
 import { LowStockTable } from "./_low-stock";
+import { getUsaOverview, type UsaOverview } from "@/lib/usa-reorder";
 
 export const metadata = { title: "Luna Production — EVA MOON" };
 
@@ -187,6 +188,14 @@ export default async function DashboardPage() {
   const lastSync = await getLastSyncTimes();
   const ainurReady = await isAinurReady();
 
+  // Склад США: сбой расчёта не должен ронять главную страницу
+  let usa: UsaOverview | null = null;
+  try {
+    usa = await getUsaOverview();
+  } catch (e) {
+    console.error("usa overview failed", e);
+  }
+
   return (
     <>
       <PageHeader
@@ -243,6 +252,73 @@ export default async function DashboardPage() {
           }
         />
       </div>
+
+      {/* ---------- Склад США ---------- */}
+      {usa ? (
+        <div className="mt-3 grid gap-3 md:grid-cols-2">
+          <Card padded={false}>
+            <a
+              href="/orders/usa"
+              className="block p-4 no-underline text-[var(--color-ink)] hover:bg-[var(--color-sand-warm)] sm:p-5"
+            >
+              <div className="text-xs font-medium uppercase tracking-wide text-[var(--color-muted)]">
+                Заказ для склада США
+              </div>
+              {usa.orders.length === 0 ? (
+                <div className="mt-1.5 text-sm text-[var(--color-muted)]">
+                  Активных заказов нет
+                </div>
+              ) : (
+                <>
+                  <div className="figure mt-1.5 text-2xl text-[var(--color-ocean)]">
+                    {usa.orders.map((o) => o.number).join(", ")}
+                    <span className="ml-2 text-base font-normal text-[var(--color-muted)]">
+                      · {usa.totalUnitsInOrders} шт
+                    </span>
+                  </div>
+                  <div className="mt-1.5 text-xs text-[var(--color-muted)]">
+                    {usa.orders[0].factoryName}
+                    {usa.orders[0].plannedReadyAt
+                      ? ` · готовность ${formatDate(usa.orders[0].plannedReadyAt)}`
+                      : " · срок не задан"}
+                  </div>
+                </>
+              )}
+            </a>
+          </Card>
+          <Card padded={false}>
+            <a
+              href="/orders/usa"
+              className="block p-4 no-underline text-[var(--color-ink)] hover:bg-[var(--color-sand-warm)] sm:p-5"
+            >
+              <div className="text-xs font-medium uppercase tracking-wide text-[var(--color-muted)]">
+                Склад США: что заказывать
+              </div>
+              <div
+                className={`figure mt-1.5 text-2xl ${
+                  usa.need.length > 0 ? "text-[#A82C2C]" : "text-[var(--color-ocean)]"
+                }`}
+              >
+                {usa.need.length}
+                <span className="ml-2 text-base font-normal text-[var(--color-muted)]">
+                  {plural(usa.need.length, "позиция не в заказе", "позиции не в заказе", "позиций не в заказе")}
+                </span>
+              </div>
+              <div className="mt-1.5 text-xs text-[var(--color-muted)]">
+                {usa.need.length > 0
+                  ? usa.need
+                      .slice(0, 3)
+                      .map((r) => `${r.rule.model} ${r.rule.color} (${r.stock} шт, заказать ${r.rule.reorderQty})`)
+                      .join(" · ") + (usa.need.length > 3 ? ` · ещё ${usa.need.length - 3}` : "")
+                  : "Всё, что заканчивается, уже закрыто заказом"}
+                {usa.covered.length > 0
+                  ? ` · ещё ${usa.covered.length} заканчиваются, но уже в заказе`
+                  : ""}
+              </div>
+            </a>
+          </Card>
+        </div>
+      ) : null}
 
       {/* ---------- Что требует внимания ---------- */}
       {(overdueOrders.length > 0 ||
