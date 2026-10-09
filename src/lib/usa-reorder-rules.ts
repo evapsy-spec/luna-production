@@ -111,3 +111,8 @@ export const USA_LABEL_BY_SKU: ReadonlyMap<string, { model: string; color: strin
 
 /** Названия склада США в базе (в Ainur — «US Warehouse», в демо-данных — «USA Warehouse») */
 export const USA_WAREHOUSE_NAMES = ["US Warehouse", "USA Warehouse"] as const;
+
+/** Заказы для склада США помечены в примечании словами «склад США». */
+export function isUsaOrderNote(note: string | null | undefined): boolean {
+  return !!note && note.toLowerCase().includes("склад сша");
+}
