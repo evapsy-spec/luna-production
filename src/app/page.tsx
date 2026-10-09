@@ -29,6 +29,7 @@ import { BarChart, RankBars, CoverageBar } from "@/components/charts";
 import { DeadlinePill, getUnitsByOrder, isOverdue, plural } from "./orders/_shared";
 import { LowStockTable } from "./_low-stock";
 import { getUsaOverview, type UsaOverview } from "@/lib/usa-reorder";
+import { usaOrderShortNumber } from "@/lib/usa-reorder-rules";
 
 export const metadata = { title: "Luna Production — EVA MOON" };
 
@@ -261,13 +262,13 @@ export default async function DashboardPage() {
                   </div>
                 ) : (
                   <>
-                    <div className="figure mt-2 text-2xl text-[var(--color-ink)] sm:text-3xl">
-                      № {usa.orders.map((o) => o.number.replace(/^PO-\d{4}-0*/, "")).join(", ")}
+                    <div className="mt-2 text-2xl font-semibold text-[var(--color-ink)] sm:text-3xl">
+                      № {usa.orders.map((o) => usaOrderShortNumber(o.number, o.note)).join(", ")}
                       <span className="ml-2 text-base font-normal text-[var(--color-muted)]">
                         · {usa.totalUnitsInOrders} шт
                       </span>
                     </div>
-                    <div className="mt-3 h-2 overflow-hidden rounded-full bg-[var(--color-sand-warm)]">
+                    <div className="mt-3 h-2 overflow-hidden rounded-full bg-[#E6E6E6]">
                       <div
                         className="h-full rounded-full bg-[var(--color-ocean)]"
                         style={{ width: `${usaProgress}%` }}
@@ -283,7 +284,7 @@ export default async function DashboardPage() {
                     </div>
                   </>
                 )}
-                <div className="mt-3 text-sm text-[var(--color-ocean)]">
+                <div className="mt-3 text-sm font-medium text-[#3B5BA5]">
                   Открыть заказ →
                 </div>
               </a>
@@ -300,7 +301,7 @@ export default async function DashboardPage() {
                   ) : null}
                 </div>
                 <div
-                  className={`figure mt-2 text-2xl sm:text-3xl ${
+                  className={`mt-2 text-2xl font-semibold sm:text-3xl ${
                     usa.need.length > 0 ? "text-[#A82C2C]" : "text-[var(--color-ocean)]"
                   }`}
                 >
@@ -335,10 +336,10 @@ export default async function DashboardPage() {
                 {usa.covered.length > 0 ? (
                   <div className="mt-2 text-xs text-[var(--color-muted)]">
                     Ещё {usa.covered.length} заканчиваются, но уже в заказе{" "}
-                    {usa.orders.map((o) => o.number.replace(/^PO-\d{4}-0*/, "")).join(", ")}
+                    {usa.orders.map((o) => usaOrderShortNumber(o.number, o.note)).join(", ")}
                   </div>
                 ) : null}
-                <div className="mt-3 text-sm text-[var(--color-ocean)]">
+                <div className="mt-3 text-sm font-medium text-[#3B5BA5]">
                   Открыть Orders →
                 </div>
               </a>

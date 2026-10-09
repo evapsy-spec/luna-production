@@ -116,3 +116,9 @@ export const USA_WAREHOUSE_NAMES = ["US Warehouse", "USA Warehouse"] as const;
 export function isUsaOrderNote(note: string | null | undefined): boolean {
   return !!note && note.toLowerCase().includes("склад сша");
 }
+
+/** Номер заказа в таблице ORDER.xlsx («Заказ № 25 …» в примечании); иначе номер Luna. */
+export function usaOrderShortNumber(number: string, note: string | null | undefined): string {
+  const m = note ? /№\s*(\d+)/.exec(note) : null;
+  return m ? m[1] : number;
+}
