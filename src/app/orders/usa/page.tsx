@@ -16,8 +16,44 @@ import {
   Td,
   formatDate,
 } from "@/components/ui";
+import { eq } from "drizzle-orm";
+import { revalidatePath } from "next/cache";
+import { redirect } from "next/navigation";
+import { db, schema } from "@/lib/db/client";
+import { getCurrentUser, writeAudit } from "@/lib/auth";
+import { Button, Input } from "@/components/ui";
 import { getUsaOverview, type RuleResult } from "@/lib/usa-reorder";
-import { plural } from "../_shared";
+import { isUsaOrderNote } from "@/lib/usa-reorder-rules";
+import { parseDate, plural, toDateInput } from "../_shared";
+
+/** Срок готовности заказа Джонни (пустое поле — снять срок). */
+async function setDeadline(formData: FormData) {
+  "use server";
+  const actor = await getCurrentUser();
+  if (!actor) redirect("/login");
+  const orderId = String(formData.get("orderId") ?? "");
+  if (!orderId) return;
+  const rows = await db
+    .select({ number: schema.productionOrders.number, note: schema.productionOrders.note })
+    .from(schema.productionOrders)
+    .where(eq(schema.productionOrders.id, orderId))
+    .limit(1);
+  if (!rows.length || !isUsaOrderNote(rows[0].note)) return;
+  const planned = parseDate(formData.get("plannedReadyAt"));
+  await db
+    .update(schema.productionOrders)
+    .set({ plannedReadyAt: planned, updatedAt: new Date().toISOString() })
+    .where(eq(schema.productionOrders.id, orderId));
+  await writeAudit(actor, {
+    action: "UPDATE",
+    entityType: "ProductionOrder",
+    entityId: orderId,
+    entityName: `${rows[0].number}: срок готовности → ${planned ?? "не задан"}`,
+  });
+  revalidatePath("/orders/usa");
+  revalidatePath("/orders");
+  revalidatePath("/");
+}
 
 export const metadata = { title: "Склад США — Luna Production" };
 export const dynamic = "force-dynamic";
@@ -129,6 +165,20 @@ export default async function UsaOrdersPage() {
                   {o.factoryName} · {o.units} шт · создан {formatDate(o.createdAt)}
                 </span>
               </div>
+              <form action={setDeadline} className="mb-4 flex flex-wrap items-end gap-2">
+                <input type="hidden" name="orderId" value={o.id} />
+                <label className="flex flex-col gap-1 text-xs text-[var(--color-muted)]">
+                  Срок готовности
+                  <Input
+                    type="date"
+                    name="plannedReadyAt"
+                    defaultValue={toDateInput(o.plannedReadyAt)}
+                  />
+                </label>
+                <Button type="submit" variant="secondary">
+                  Сохранить срок
+                </Button>
+              </form>
               <Table>
                 <thead>
                   <tr>
