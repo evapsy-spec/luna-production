@@ -25,23 +25,9 @@ import {
 
 export const metadata = { title: "Заказы на пошив — Luna Production" };
 
-const TABS: { key: string; label: string }[] = [
-  { key: "active", label: "Активные" },
-  { key: "SAMPLE", label: "Образец" },
-  { key: "IN_PRODUCTION", label: "В производстве" },
-  { key: "READY", label: "Готово" },
-  { key: "RECEIVED", label: "Принято" },
-  { key: "all", label: "Все" },
-];
-
-export default async function OrdersPage({
-  searchParams,
-}: {
-  searchParams: Promise<{ tab?: string }>;
-}) {
+export default async function OrdersPage() {
   const user = await getCurrentUser();
   const showMoney = canSeeMoney(user);
-  const { tab: tabParam } = await searchParams;
 
   const allWithUsa = await db
     .select({
@@ -101,22 +87,10 @@ export default async function OrdersPage({
     (o) => o.status === "SAMPLE" || o.status === "IN_PRODUCTION",
   );
 
-  /**
-   * По умолчанию открываем «Активные» — это рабочий экран.
-   * Но если активных нет, а заказы в базе есть (например, только что
-   * загрузили историю фабрики), пустой список с текстом «создайте первый
-   * заказ» вводит в заблуждение — там ниже десять заказов, просто в другом
-   * фильтре. В этом случае сразу показываем «Все».
-   */
-  const tab =
-    tabParam ?? (active.length === 0 && all.length > 0 ? "all" : "active");
-
-  const filtered = all.filter((o) => {
-    if (tab === "all") return true;
-    if (tab === "active")
-      return o.status === "SAMPLE" || o.status === "IN_PRODUCTION";
-    return o.status === tab;
-  });
+  // в списке только заказы, которые сейчас в работе; принятые старые заказы здесь не нужны
+  const filtered = all.filter((o) =>
+    ["SAMPLE", "IN_PRODUCTION", "READY"].includes(o.status),
+  );
   // цифры сверху считают все заказы, включая заказ Джонни для склада США
   const activeAll = allWithUsa.filter(
     (o) => o.status === "SAMPLE" || o.status === "IN_PRODUCTION",
@@ -164,56 +138,7 @@ export default async function OrdersPage({
 
       {usa ? <UsaCards usa={usa} usaProgress={usaProgress} className="mb-6" /> : null}
 
-      {/* Фильтр по статусу */}
-      <div className="mb-4 -mx-4 overflow-x-auto px-4">
-        <div className="flex gap-2">
-          {TABS.map((t) => {
-            const count =
-              t.key === "all"
-                ? all.length
-                : t.key === "active"
-                  ? active.length
-                  : all.filter((o) => o.status === t.key).length;
-            const isCurrent = t.key === tab;
-            return (
-              <a
-                key={t.key}
-                href={`/orders?tab=${t.key}`}
-                className={`touch inline-flex shrink-0 items-center gap-1.5 rounded-lg border px-3 py-2 text-sm no-underline transition-transform duration-100 active:scale-[0.97] ${
-                  isCurrent
-                    ? "border-[var(--color-gold)] bg-[var(--color-gold)]/10 text-[var(--color-gold-deep)]"
-                    : "border-[var(--color-line)] bg-white text-[var(--color-ink)]"
-                }`}
-              >
-                {t.label}
-                <span className="tnum text-xs opacity-60">{count}</span>
-              </a>
-            );
-          })}
-        </div>
-      </div>
-
-      {filtered.length === 0 ? (
-        <EmptyState
-          title={all.length === 0 ? "Заказов пока нет" : "В этом фильтре пусто"}
-          hint={
-            all.length === 0
-              ? "Создайте первый заказ — Luna предложит, что стоит отшить, исходя из скорости продаж и остатков на складах."
-              : `Заказов в базе ${all.length}, но ни один не попадает в этот фильтр. Откройте «Все», чтобы увидеть остальные.`
-          }
-          action={
-            all.length === 0 ? (
-              <LinkButton href="/orders/new" variant="primary">
-                + Новый заказ
-              </LinkButton>
-            ) : (
-              <LinkButton href="/orders?tab=all" variant="secondary">
-                Показать все заказы
-              </LinkButton>
-            )
-          }
-        />
-      ) : (
+      {filtered.length > 0 ? (
         <div className="flex flex-col gap-3">
           {filtered.map((order) => {
             const units = unitsByOrder.get(order.id);
@@ -325,7 +250,7 @@ export default async function OrdersPage({
             );
           })}
         </div>
-      )}
+      ) : null}
     </>
   );
 }
