@@ -15,7 +15,8 @@ import { rawSqlite } from "../src/lib/db/client";
 
 const NUMBER = "PO-2026-011";
 const FX = 0.001853;
-const FACTORY_LIKE = "%Джонни%";
+// В базе фабрика может называться «Johnny Production» или «Джонни (Бали)» — ищем оба варианта
+const FACTORY_LIKES = ["%Johnny%", "%Джонни%"];
 const APPLY = process.argv.includes("--apply");
 
 // [SKU, штук, IDR за штуку, что это в таблице заказов]
@@ -65,9 +66,12 @@ function main() {
     return;
   }
   const factory = db
-    .prepare("SELECT id, name FROM factories WHERE name LIKE ?")
-    .get(FACTORY_LIKE) as { id: string; name: string } | undefined;
-  if (!factory) throw new Error("Фабрика Джонни не найдена (сначала import-johnny.ts)");
+    .prepare("SELECT id, name FROM factories WHERE name LIKE ? OR name LIKE ? ORDER BY created_at LIMIT 1")
+    .get(FACTORY_LIKES[0], FACTORY_LIKES[1]) as { id: string; name: string } | undefined;
+  if (!factory) {
+    const all = db.prepare("SELECT name FROM factories").all() as { name: string }[];
+    throw new Error("Фабрика Джонни не найдена. Есть фабрики: " + all.map((f) => f.name).join(", "));
+  }
 
   const find = db.prepare(
     "SELECT v.id AS vid, v.product_id AS pid FROM product_variants v WHERE v.sku = ?",
