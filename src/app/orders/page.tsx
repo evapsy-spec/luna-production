@@ -1,6 +1,7 @@
 import { desc, eq, inArray } from "drizzle-orm";
 import { db, schema } from "@/lib/db/client";
-import { getUsaOverview, type UsaActiveOrder } from "@/lib/usa-reorder";
+import { getUsaOverview, type UsaActiveOrder, type UsaOverview } from "@/lib/usa-reorder";
+import { UsaCards } from "../_usa-cards";
 import { isUsaOrderNote } from "@/lib/usa-reorder-rules";
 import { getCurrentUser, canSeeMoney } from "@/lib/auth";
 import {
@@ -42,7 +43,7 @@ export default async function OrdersPage({
   const showMoney = canSeeMoney(user);
   const { tab: tabParam } = await searchParams;
 
-  const all = await db
+  const allWithUsa = await db
     .select({
       id: schema.productionOrders.id,
       number: schema.productionOrders.number,
@@ -67,14 +68,30 @@ export default async function OrdersPage({
   // Заказы для склада США (от Джонни) показываем по-другому: без бюджета в батах
   // и «отшито», зато с составом заказа. Состав берём из «Склада США».
   const usaById = new Map<string, UsaActiveOrder>();
+  let usa: UsaOverview | null = null;
   try {
-    const usa = await getUsaOverview();
+    usa = await getUsaOverview();
     for (const o of usa.orders) usaById.set(o.id, o);
   } catch (e) {
     console.error("usa overview failed", e);
   }
   const isUsa = (o: { id: string; note: string | null }) =>
     usaById.has(o.id) || isUsaOrderNote(o.note);
+
+  // Заказ для склада США показан парой карточек сверху, в списке его нет
+  const all = allWithUsa.filter((o) => !isUsa(o));
+  let usaProgress = 0;
+  if (usa && usa.orders.length > 0) {
+    const uu = await getUnitsByOrder(usa.orders.map((o) => o.id));
+    let q = 0;
+    let pr = 0;
+    for (const o of usa.orders) {
+      const u = uu.get(o.id);
+      q += u?.quantity ?? 0;
+      pr += u?.produced ?? 0;
+    }
+    usaProgress = q > 0 ? Math.min(100, Math.round((pr / q) * 100)) : 0;
+  }
 
   const orderIds = all.map((o) => o.id);
   const paidByOrder = await getPaidByOrder(orderIds);
@@ -101,11 +118,11 @@ export default async function OrdersPage({
     return o.status === tab;
   });
   const overdue = all.filter(isOverdue);
-  const unitsInWork = active.filter((o) => !isUsa(o)).reduce((sum, o) => {
+  const unitsInWork = active.reduce((sum, o) => {
     const u = unitsByOrder.get(o.id);
     return sum + (u ? Math.max(0, u.quantity - u.produced) : 0);
   }, 0);
-  const activeBudget = active.filter((o) => !isUsa(o)).reduce((s, o) => s + o.snapshotTotalCost, 0);
+  const activeBudget = active.reduce((s, o) => s + o.snapshotTotalCost, 0);
 
   return (
     <>
@@ -121,6 +138,8 @@ export default async function OrdersPage({
           </div>
         }
       />
+
+      {usa ? <UsaCards usa={usa} usaProgress={usaProgress} className="mb-6" /> : null}
 
       <div className="mb-6 grid grid-cols-2 gap-3 lg:grid-cols-4">
         <Stat label="Активных заказов" value={active.length} />
@@ -199,73 +218,6 @@ export default async function OrdersPage({
               0,
               order.snapshotTotalCost - order.appliedDefectCredit - paid,
             );
-
-            if (isUsa(order)) {
-              const usaOrder = usaById.get(order.id);
-              const total = units?.quantity ?? usaOrder?.units ?? 0;
-              return (
-                <Card key={order.id} padded={false}>
-                  <a
-                    href="/orders/usa"
-                    className="block p-4 no-underline text-[var(--color-ink)] hover:bg-[var(--color-sand-warm)] active:bg-[var(--color-sand-warm)] sm:p-5"
-                  >
-                    <div className="flex flex-wrap items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span className="figure text-base text-[var(--color-ocean)]">
-                            {order.number}
-                          </span>
-                          <OrderStatusPill status={order.status} />
-                          <StatusPill tone="neutral">Склад США</StatusPill>
-                          <DeadlinePill
-                            plannedReadyAt={order.plannedReadyAt}
-                            actualReadyAt={order.actualReadyAt}
-                            status={order.status}
-                          />
-                        </div>
-                        <div className="mt-1.5 text-sm text-[var(--color-muted)]">
-                          {order.factoryName} · заказ для склада США
-                        </div>
-                      </div>
-                      <div className="figure text-2xl text-[var(--color-ink)]">
-                        {total}{" "}
-                        <span className="text-base font-normal text-[var(--color-muted)]">
-                          шт
-                        </span>
-                      </div>
-                    </div>
-                    {usaOrder && usaOrder.groups.length > 0 ? (
-                      <div className="mt-3 flex flex-wrap gap-1.5">
-                        {usaOrder.groups.slice(0, 8).map((g) => (
-                          <span
-                            key={g.model}
-                            className="rounded-md bg-[var(--color-sand-warm)] px-2 py-1 text-xs"
-                          >
-                            {g.model} <b className="tnum">{g.total}</b>
-                          </span>
-                        ))}
-                        {usaOrder.groups.length > 8 ? (
-                          <span className="px-1 py-1 text-xs text-[var(--color-muted)]">
-                            и ещё {usaOrder.groups.length - 8}
-                          </span>
-                        ) : null}
-                      </div>
-                    ) : null}
-                    <div className="mt-3 flex flex-wrap gap-x-5 gap-y-1 text-xs text-[var(--color-muted)]">
-                      <span>
-                        срок{" "}
-                        <b className="text-[var(--color-ink)]">
-                          {order.plannedReadyAt
-                            ? formatDate(order.plannedReadyAt)
-                            : "не задан"}
-                        </b>
-                      </span>
-                      <span>создан {formatDate(order.createdAt)}</span>
-                    </div>
-                  </a>
-                </Card>
-              );
-            }
 
             return (
               <Card key={order.id} padded={false}>
