@@ -2,6 +2,7 @@ import { and, eq } from "drizzle-orm";
 import { notFound, redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { db, schema } from "@/lib/db/client";
+import { isUsaOrderNote } from "@/lib/usa-reorder-rules";
 import { getCurrentUser, canSeeMoney, writeAudit } from "@/lib/auth";
 import { formatMeters, formatThb } from "@/lib/production";
 import {
@@ -63,6 +64,9 @@ export default async function OrderPage({
 
   if (!rows.length) notFound();
   const { order, factory } = rows[0];
+
+  // Заказы для склада США смотрим на странице «Склад США», отдельная страница не нужна
+  if (isUsaOrderNote(order.note)) redirect("/orders/usa");
 
   const lines = await db
     .select({

@@ -116,9 +116,9 @@ export default async function UsaOrdersPage() {
           {ov.orders.map((o) => (
             <Card key={o.id}>
               <div className="mb-3 flex flex-wrap items-center gap-2">
-                <a href={`/orders/${o.id}`} className="figure text-base text-[var(--color-ocean)]">
+                <span className="figure text-base text-[var(--color-ocean)]">
                   {o.number}
-                </a>
+                </span>
                 <OrderStatusPill status={o.status} />
                 {o.plannedReadyAt ? (
                   <StatusPill tone="neutral">готовность {formatDate(o.plannedReadyAt)}</StatusPill>

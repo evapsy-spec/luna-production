@@ -206,7 +206,7 @@ export default async function OrdersPage({
               return (
                 <Card key={order.id} padded={false}>
                   <a
-                    href={`/orders/${order.id}`}
+                    href="/orders/usa"
                     className="block p-4 no-underline text-[var(--color-ink)] hover:bg-[var(--color-sand-warm)] active:bg-[var(--color-sand-warm)] sm:p-5"
                   >
                     <div className="flex flex-wrap items-start justify-between gap-3">

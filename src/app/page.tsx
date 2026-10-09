@@ -247,7 +247,7 @@ export default async function DashboardPage() {
           <div className="grid gap-3 md:grid-cols-2">
             <Card padded={false}>
               <a
-                href={usa.orders.length === 1 ? `/orders/${usa.orders[0].id}` : "/orders/usa"}
+                href="/orders/usa"
                 className="block p-4 no-underline text-[var(--color-ink)] hover:bg-[var(--color-sand-warm)] sm:p-5"
               >
                 <div className="flex items-center gap-2 text-sm font-medium">
