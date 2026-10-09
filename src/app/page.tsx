@@ -22,7 +22,6 @@ import {
   Table,
   Th,
   Td,
-  EmptyState,
   formatDate,
   formatDateTime,
 } from "@/components/ui";
@@ -59,17 +58,8 @@ export default async function DashboardPage() {
     )
     .orderBy(desc(schema.productionOrders.createdAt));
 
-  const activeOrders = orders.filter(
-    (o) => o.status === "SAMPLE" || o.status === "IN_PRODUCTION",
-  );
-  const unitsByOrder = await getUnitsByOrder(activeOrders.map((o) => o.id));
   const overdueOrders = orders.filter(isOverdue);
 
-  const unitsInWork = activeOrders.reduce((sum, o) => {
-    const u = unitsByOrder.get(o.id);
-    return sum + (u ? Math.max(0, u.quantity - u.produced) : 0);
-  }, 0);
-  const activeBudget = activeOrders.reduce((s, o) => s + o.snapshotTotalCost, 0);
 
   // ---------- Склад ----------
   const stockTotalRow = await db
@@ -195,6 +185,18 @@ export default async function DashboardPage() {
   } catch (e) {
     console.error("usa overview failed", e);
   }
+  let usaProgress = 0;
+  if (usa && usa.orders.length > 0) {
+    const uu = await getUnitsByOrder(usa.orders.map((o) => o.id));
+    let q = 0;
+    let pr = 0;
+    for (const o of usa.orders) {
+      const u = uu.get(o.id);
+      q += u?.quantity ?? 0;
+      pr += u?.produced ?? 0;
+    }
+    usaProgress = q > 0 ? Math.min(100, Math.round((pr / q) * 100)) : 0;
+  }
 
   return (
     <>
@@ -223,101 +225,127 @@ export default async function DashboardPage() {
         </Callout>
       ) : null}
 
-      {/* ---------- Главные цифры ---------- */}
+      {/* ---------- Главная цифра ---------- */}
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <Stat
-          label="Заказов в работе"
-          value={activeOrders.length}
-          sub={`${unitsInWork} шт ещё не отшито`}
-        />
-        <Stat
-          label="Товара на складах"
-          value={`${stockTotal.toLocaleString("ru-RU").replace(/,/g, " ")} шт`}
-          sub={stockByWarehouse
-            .map((w) => `${w.name}: ${w.total}`)
-            .join(" · ")}
-        />
-        <Stat
-          label="Бюджет в производстве"
-          value={<Money value={activeBudget} hidden={!showMoney} />}
-          sub="по снэпшоту на момент заказа"
-        />
-        <Stat
-          label="Просрочено заказов"
-          value={overdueOrders.length}
-          sub={
-            overdueOrders.length > 0
-              ? "нужно связаться с фабриками"
-              : "все идут в срок"
-          }
-        />
+        <div className="col-span-2">
+          <Stat
+            label="Товара на складах"
+            value={`${stockTotal.toLocaleString("ru-RU").replace(/,/g, " ")} шт`}
+            sub={stockByWarehouse
+              .map((w) => `${w.name}: ${w.total}`)
+              .join(" · ")}
+          />
+        </div>
       </div>
 
-      {/* ---------- Склад США ---------- */}
+      {/* ---------- Фабрики: что в работе и что заказывать ----------
+          Каждая фабрика / склад — своя пара карточек. Сейчас готов Склад США
+          (Johnny). Бали, Украина, Китай добавятся такими же блоками. */}
       {usa ? (
-        <div className="mt-3 grid gap-3 md:grid-cols-2">
-          <Card padded={false}>
-            <a
-              href="/orders/usa"
-              className="block p-4 no-underline text-[var(--color-ink)] hover:bg-[var(--color-sand-warm)] sm:p-5"
-            >
-              <div className="text-xs font-medium uppercase tracking-wide text-[var(--color-muted)]">
-                Заказ для склада США
-              </div>
-              {usa.orders.length === 0 ? (
-                <div className="mt-1.5 text-sm text-[var(--color-muted)]">
-                  Активных заказов нет
-                </div>
-              ) : (
-                <>
-                  <div className="figure mt-1.5 text-2xl text-[var(--color-ocean)]">
-                    {usa.orders.map((o) => o.number).join(", ")}
-                    <span className="ml-2 text-base font-normal text-[var(--color-muted)]">
-                      · {usa.totalUnitsInOrders} шт
-                    </span>
-                  </div>
-                  <div className="mt-1.5 text-xs text-[var(--color-muted)]">
-                    {usa.orders[0].factoryName}
-                    {usa.orders[0].plannedReadyAt
-                      ? ` · готовность ${formatDate(usa.orders[0].plannedReadyAt)}`
-                      : " · срок не задан"}
-                  </div>
-                </>
-              )}
-            </a>
-          </Card>
-          <Card padded={false}>
-            <a
-              href="/orders/usa"
-              className="block p-4 no-underline text-[var(--color-ink)] hover:bg-[var(--color-sand-warm)] sm:p-5"
-            >
-              <div className="text-xs font-medium uppercase tracking-wide text-[var(--color-muted)]">
-                Склад США: что заказывать
-              </div>
-              <div
-                className={`figure mt-1.5 text-2xl ${
-                  usa.need.length > 0 ? "text-[#A82C2C]" : "text-[var(--color-ocean)]"
-                }`}
+        <>
+          <SectionTitle>Склад США · Johnny</SectionTitle>
+          <div className="grid gap-3 md:grid-cols-2">
+            <Card padded={false}>
+              <a
+                href={usa.orders.length === 1 ? `/orders/${usa.orders[0].id}` : "/orders/usa"}
+                className="block p-4 no-underline text-[var(--color-ink)] hover:bg-[var(--color-sand-warm)] sm:p-5"
               >
-                {usa.need.length}
-                <span className="ml-2 text-base font-normal text-[var(--color-muted)]">
-                  {plural(usa.need.length, "позиция не в заказе", "позиции не в заказе", "позиций не в заказе")}
-                </span>
-              </div>
-              <div className="mt-1.5 text-xs text-[var(--color-muted)]">
-                {usa.need.length > 0
-                  ? usa.need
-                      .slice(0, 3)
-                      .map((r) => `${r.rule.model} ${r.rule.color} (${r.stock} шт, заказать ${r.rule.reorderQty})`)
-                      .join(" · ") + (usa.need.length > 3 ? ` · ещё ${usa.need.length - 3}` : "")
-                  : "Всё, что заканчивается, уже закрыто заказом"}
-                {usa.covered.length > 0
-                  ? ` · ещё ${usa.covered.length} заканчиваются, но уже в заказе`
-                  : ""}
-              </div>
-            </a>
-          </Card>
-        </div>
+                <div className="flex items-center gap-2 text-sm font-medium">
+                  Активный заказ США
+                  {usa.orders.length > 0 ? (
+                    <StatusPill tone="ok">В работе</StatusPill>
+                  ) : null}
+                </div>
+                {usa.orders.length === 0 ? (
+                  <div className="mt-2 text-sm text-[var(--color-muted)]">
+                    Активных заказов нет
+                  </div>
+                ) : (
+                  <>
+                    <div className="figure mt-2 text-3xl text-[var(--color-ink)]">
+                      № {usa.orders.map((o) => o.number.replace(/^PO-\d{4}-0*/, "")).join(", ")}
+                      <span className="ml-2 text-base font-normal text-[var(--color-muted)]">
+                        · {usa.totalUnitsInOrders} шт
+                      </span>
+                    </div>
+                    <div className="mt-3 h-2 overflow-hidden rounded-full bg-[var(--color-sand-warm)]">
+                      <div
+                        className="h-full rounded-full bg-[var(--color-ocean)]"
+                        style={{ width: `${usaProgress}%` }}
+                      />
+                    </div>
+                    <div className="mt-1.5 flex justify-between text-xs text-[var(--color-muted)]">
+                      <span>{usa.orders[0].factoryName}</span>
+                      <span>
+                        {usa.orders[0].plannedReadyAt
+                          ? `готовность ${formatDate(usa.orders[0].plannedReadyAt)}`
+                          : "срок не задан"}
+                      </span>
+                    </div>
+                  </>
+                )}
+                <div className="mt-3 text-sm text-[var(--color-ocean)]">
+                  Открыть заказ →
+                </div>
+              </a>
+            </Card>
+            <Card padded={false}>
+              <a
+                href="/orders/usa"
+                className="block p-4 no-underline text-[var(--color-ink)] hover:bg-[var(--color-sand-warm)] sm:p-5"
+              >
+                <div className="flex items-center gap-2 text-sm font-medium">
+                  Склад США: что заказывать
+                  {usa.need.length > 0 ? (
+                    <StatusPill tone="critical">{usa.need.length}</StatusPill>
+                  ) : null}
+                </div>
+                <div
+                  className={`figure mt-2 text-3xl ${
+                    usa.need.length > 0 ? "text-[#A82C2C]" : "text-[var(--color-ocean)]"
+                  }`}
+                >
+                  {usa.need.length}
+                  <span className="ml-2 text-base font-normal text-[var(--color-muted)]">
+                    {plural(usa.need.length, "позиция не в заказе", "позиции не в заказе", "позиций не в заказе")}
+                  </span>
+                </div>
+                <div className="mt-2 flex flex-col gap-0.5 text-sm">
+                  {usa.need.length > 0 ? (
+                    <>
+                      {usa.need.slice(0, 3).map((r) => (
+                        <div key={r.rule.skus[0]}>
+                          <b>{r.rule.model} {r.rule.color}</b>
+                          <span className="text-[var(--color-muted)]">
+                            {" "}· остаток {r.stock} · заказать {r.rule.reorderQty} шт
+                          </span>
+                        </div>
+                      ))}
+                      {usa.need.length > 3 ? (
+                        <div className="text-xs text-[var(--color-muted)]">
+                          и ещё {usa.need.length - 3}
+                        </div>
+                      ) : null}
+                    </>
+                  ) : (
+                    <div className="text-[var(--color-muted)]">
+                      Всё, что заканчивается, уже закрыто заказом
+                    </div>
+                  )}
+                </div>
+                {usa.covered.length > 0 ? (
+                  <div className="mt-2 text-xs text-[var(--color-muted)]">
+                    Ещё {usa.covered.length} заканчиваются, но уже в заказе{" "}
+                    {usa.orders.map((o) => o.number.replace(/^PO-\d{4}-0*/, "")).join(", ")}
+                  </div>
+                ) : null}
+                <div className="mt-3 text-sm text-[var(--color-ocean)]">
+                  Открыть Orders →
+                </div>
+              </a>
+            </Card>
+          </div>
+        </>
       ) : null}
 
       {/* ---------- Что требует внимания ---------- */}
@@ -425,79 +453,6 @@ export default async function DashboardPage() {
 
       {/* ---------- Пора заказывать: остатки на наших складах ---------- */}
       <LowStockTable />
-
-      {/* ---------- Заказы в производстве ---------- */}
-      <SectionTitle>Сейчас в производстве</SectionTitle>
-      {activeOrders.length === 0 ? (
-        <EmptyState
-          title="Активных заказов нет"
-          hint="Luna подскажет, что стоит отшить, исходя из скорости продаж и остатков."
-          action={
-            <LinkButton href="/orders/new" variant="primary">
-              + Новый заказ
-            </LinkButton>
-          }
-        />
-      ) : (
-        <Card padded={false}>
-          <Table>
-            <thead>
-              <tr>
-                <Th>Заказ</Th>
-                <Th>Фабрика</Th>
-                <Th>Статус</Th>
-                <Th align="right">Шт</Th>
-                <Th align="right">Готово</Th>
-                <Th>Срок</Th>
-                {showMoney ? <Th align="right">Бюджет</Th> : null}
-              </tr>
-            </thead>
-            <tbody>
-              {activeOrders.map((o) => {
-                const u = unitsByOrder.get(o.id);
-                return (
-                  <tr key={o.id}>
-                    <Td>
-                      <a
-                        href={`/orders/${o.id}`}
-                        className="font-medium text-[var(--color-ocean)] no-underline hover:underline active:underline"
-                      >
-                        {o.number}
-                      </a>
-                    </Td>
-                    <Td>{o.factoryName}</Td>
-                    <Td>
-                      <StatusPill
-                        tone={o.status === "SAMPLE" ? "warn" : "ok"}
-                      >
-                        {o.status === "SAMPLE" ? "образец" : "пошив"}
-                      </StatusPill>
-                    </Td>
-                    <Td align="right">{u?.quantity ?? 0}</Td>
-                    <Td align="right">
-                      {u && u.quantity > 0
-                        ? `${Math.round((u.produced / u.quantity) * 100)}%`
-                        : "—"}
-                    </Td>
-                    <Td>
-                      <DeadlinePill
-                        plannedReadyAt={o.plannedReadyAt}
-                        actualReadyAt={o.actualReadyAt}
-                        status={o.status}
-                      />
-                    </Td>
-                    {showMoney ? (
-                      <Td align="right">
-                        <Money value={o.snapshotTotalCost} />
-                      </Td>
-                    ) : null}
-                  </tr>
-                );
-              })}
-            </tbody>
-          </Table>
-        </Card>
-      )}
 
       {/* ---------- Продажи и запас ---------- */}
       <SectionTitle>Продажи и запас</SectionTitle>
