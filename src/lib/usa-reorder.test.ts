@@ -77,3 +77,10 @@ test("живые данные 09.10.2026: одна позиция к заказ�
     ["00303", "00308", "00316-2", "00343-2", "00516", "00672-6", "01772", "01866"].sort(),
   );
 });
+
+test("isUsaOrderNote: заказ для склада США отличается от обычного пошива", async () => {
+  const { isUsaOrderNote } = await import("./usa-reorder-rules");
+  assert.equal(isUsaOrderNote("Заказ № 25 из ORDER.xlsx (вкладка Order 25), склад США. Сумма"), true);
+  assert.equal(isUsaOrderNote("Обычный пошив для Пхукета"), false);
+  assert.equal(isUsaOrderNote(null), false);
+});

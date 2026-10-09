@@ -15,6 +15,7 @@
  */
 import { and, eq, gte, inArray, sql } from "drizzle-orm";
 import { db, schema } from "@/lib/db/client";
+import { notUsaOrder } from "@/lib/usa-order-filter";
 
 /** Склады, за которыми следим. Порядок задаёт порядок колонок. */
 export const WATCHED_WAREHOUSES = [
@@ -205,7 +206,12 @@ export async function getReplenish(
       schema.productionOrders,
       eq(schema.productionOrderLines.orderId, schema.productionOrders.id),
     )
-    .where(inArray(schema.productionOrders.status, ["SAMPLE", "IN_PRODUCTION"]));
+    .where(
+      and(
+        inArray(schema.productionOrders.status, ["SAMPLE", "IN_PRODUCTION"]),
+        notUsaOrder(),
+      ),
+    );
 
   const onOrder = new Map<string, number>();
   for (const r of orderRows) {

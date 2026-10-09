@@ -1,4 +1,5 @@
 import { desc, eq, inArray } from "drizzle-orm";
+import { isUsaOrderNote } from "@/lib/usa-reorder-rules";
 import { db, schema } from "@/lib/db/client";
 import { getCurrentUser, canSeeMoney } from "@/lib/auth";
 import {
@@ -40,7 +41,7 @@ export default async function OrdersPage({
   const showMoney = canSeeMoney(user);
   const { tab: tabParam } = await searchParams;
 
-  const all = await db
+  const allRaw = await db
     .select({
       id: schema.productionOrders.id,
       number: schema.productionOrders.number,
@@ -61,6 +62,9 @@ export default async function OrdersPage({
       eq(schema.productionOrders.factoryId, schema.factories.id),
     )
     .orderBy(desc(schema.productionOrders.createdAt));
+
+  // заказы для склада США живут на отдельной странице «Склад США»
+  const all = allRaw.filter((o) => !isUsaOrderNote(o.note));
 
   const orderIds = all.map((o) => o.id);
   const paidByOrder = await getPaidByOrder(orderIds);

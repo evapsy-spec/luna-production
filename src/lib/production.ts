@@ -11,6 +11,7 @@
  */
 import { and, eq, gte, inArray, isNull, sql } from "drizzle-orm";
 import { db, schema } from "@/lib/db/client";
+import { notUsaOrder } from "@/lib/usa-order-filter";
 
 // ============================================================
 // СЕБЕСТОИМОСТЬ ТКАНИ
@@ -556,11 +557,14 @@ export async function getIncomingQuantities(): Promise<Map<string, number>> {
       eq(schema.productionOrderLines.orderId, schema.productionOrders.id),
     )
     .where(
-      inArray(schema.productionOrders.status, [
-        "SAMPLE",
-        "IN_PRODUCTION",
-        "READY",
-      ]),
+      and(
+        inArray(schema.productionOrders.status, [
+          "SAMPLE",
+          "IN_PRODUCTION",
+          "READY",
+        ]),
+        notUsaOrder(),
+      ),
     )
     .groupBy(schema.productionOrderLines.variantId);
 
