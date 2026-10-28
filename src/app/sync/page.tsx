@@ -58,7 +58,7 @@ const KIND_RU: Record<string, string> = {
   stores: "Склады",
 };
 
-const SALES_PERIODS = [30, 60, 90, 180] as const;
+const SALES_PERIODS = [30, 60, 90, 180, 365] as const;
 
 function kindLabel(kind: string): string {
   return KIND_RU[kind] ?? kind;
