@@ -58,8 +58,10 @@ export default async function BrandsPage({
   const idSet = new Set(ids);
   const sales12 = new Map<string, number>();
   const sales90 = new Map<string, number>();
+  let firstSaleDay = "";
   for (const r of salesRows) {
     if (!idSet.has(r.variantId)) continue;
+    if (!firstSaleDay || r.day < firstSaleDay) firstSaleDay = r.day;
     sales12.set(r.variantId, (sales12.get(r.variantId) ?? 0) + r.units);
     if (r.day >= d90) sales90.set(r.variantId, (sales90.get(r.variantId) ?? 0) + r.units);
   }
@@ -101,7 +103,7 @@ export default async function BrandsPage({
     <>
       <PageHeader
         title={`Бренд: ${brand}`}
-        subtitle="Что хорошо продаётся и что закончилось или заканчивается — чтобы сделать заказ поставщику"
+        subtitle={`Что хорошо продаётся и что закончилось или заканчивается — чтобы сделать заказ поставщику. Продажи в базе с ${firstSaleDay || "—"}`}
       />
       {variants.length === 0 ? (
         <EmptyState
